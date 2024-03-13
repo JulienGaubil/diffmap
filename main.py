@@ -180,7 +180,7 @@ def worker_init_fn(_):
     else:
         return np.random.seed(np.random.get_state()[1][0] + worker_id)
 
-
+#classe utilisee par Pokemon
 class DataModuleFromConfig(pl.LightningDataModule):
     def __init__(self, batch_size, train=None, validation=None, test=None, predict=None,
                  wrap=False, num_workers=None, shuffle_test_loader=False, use_worker_init_fn=False,
@@ -215,7 +215,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
     def setup(self, stage=None):
         self.datasets = dict(
             (k, instantiate_from_config(self.dataset_configs[k]))
-            for k in self.dataset_configs)
+            for k in self.dataset_configs) #clefs "train", "validation", "test" (depend des splits definis dans config)
         if self.wrap:
             for k in self.datasets:
                 self.datasets[k] = WrappedDataset(self.datasets[k])
@@ -373,12 +373,13 @@ class ImageLogger(Callback):
         check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
         if self.log_all_val and split == "val":
             should_log = True
+            check_idx += 1
         else:
             should_log = self.check_frequency(check_idx)
         if (should_log and  (check_idx % self.batch_freq == 0) and
                 hasattr(pl_module, "log_images") and
                 callable(pl_module.log_images) and
-                self.max_images > 0):
+                self.max_images > 0) or split == "val":
             logger = type(pl_module.logger)
 
             is_train = pl_module.training
@@ -842,13 +843,14 @@ if __name__ == "__main__":
         trainer = Trainer.from_argparse_args(trainer_opt, **trainer_kwargs)
         trainer.logdir = logdir  ###
 
+        #cree et prepare les dataloaders/datasets
         # data
         data = instantiate_from_config(config.data)
         # NOTE according to https://pytorch-lightning.readthedocs.io/en/latest/datamodules.html
         # calling these ourselves should not be necessary but it is.
         # lightning still takes care of proper multiprocessing though
         data.prepare_data()
-        data.setup()
+        data.setup() #cree les datasets
         rank_zero_print("#### Data #####")
         try:
             for k in data.datasets:
