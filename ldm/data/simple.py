@@ -13,6 +13,8 @@ from datasets import load_dataset
 import copy
 import csv
 import cv2
+import random
+import json
 
 # Some hacky things to make experimentation easier
 def make_transform_multi_folder_data(paths, caption_files=None, **kwargs):
@@ -27,7 +29,7 @@ def make_nfp_data(base_path):
     datasets = [NfpDataset(x, image_transforms=copy.copy(tforms), default_caption="A view from a train window") for x in dirs]
     return torch.utils.data.ConcatDataset(datasets)
 
-
+#classe possible a utiliser, classe pour les sequences video
 class VideoDataset(Dataset):
     def __init__(self, root_dir, image_transforms, caption_file, offset=8, n=2):
         self.root_dir = Path(root_dir)
@@ -120,7 +122,7 @@ def make_multi_folder_data(paths, caption_files=None, **kwargs):
     return torch.utils.data.ConcatDataset(datasets)
 
 
-
+#dataset pour la prediction de next view, paires d'images consecutives
 class NfpDataset(Dataset):
     def __init__(self,
         root_dir,
@@ -145,7 +147,7 @@ class NfpDataset(Dataset):
         curr = self.paths[index+1]
         data = {}
         data["image"] = self._load_im(curr)
-        data["prev"] = self._load_im(prev)
+        data["prev"] = self._load_im(prev) #deux images successives
         data["txt"] = self.default_caption
         return data
 
@@ -275,8 +277,8 @@ def hf_dataset(
     image_column="image",
     text_column="text",
     split='train',
-    image_key='image',
-    caption_key='txt',
+    image_key='image', #clef associee a l'input dans le batch
+    caption_key='txt', #clef associee au conditionnement dans le batch
     ):
     """Make huggingface dataset with appropriate list of transforms applied
     """
@@ -290,6 +292,7 @@ def hf_dataset(
         processed = {}
         processed[image_key] = [tform(im) for im in examples[image_column]]
         processed[caption_key] = examples[text_column]
+        # processed[caption_key] = [tform(im) for im in examples[image_column]] #replaces text with images
         return processed
 
     ds.set_transform(pre_process)
@@ -327,8 +330,6 @@ class TextOnly(Dataset):
 
 
 
-import random
-import json
 class IdRetreivalDataset(FolderData):
     def __init__(self, ret_file, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -349,3 +350,49 @@ class IdRetreivalDataset(FolderData):
         # data["match"] = im
         data["match"] = torch.cat((data["image"], im), dim=-1)
         return data
+
+
+############ Data Modules and Datasets for stable-diffmap ###############
+
+class NfpImageDataset(Dataset):
+    def __init__(self,
+        root_dir,
+        image_transforms=[],
+        ext="jpg",
+        image_key='trgt',
+        cond_key='ctxt',
+        split='train'
+        ) -> None:
+        """assume sequential frames and a deterministic transform"""
+
+        self.root_dir = Path(root_dir)
+        self.image_key = image_key
+        self.cond_key = cond_key
+
+        #defines val split and current dataset according to split
+        self.split = split
+        n_val_samples = 6 # number of samples for val
+        self.paths = sorted(list(self.root_dir.rglob(f"*.{ext}")))
+        val_idx = np.linspace(0,len(self.paths)-1, n_val_samples, dtype=np.uint) #indices of val samples
+        sample_idx = np.setdiff1d(np.arange(len(self.paths)), val_idx) if self.split=="train" else val_idx
+        self.paths = [self.paths[k] for k in sample_idx]
+
+        self.tform = make_tranforms(image_transforms)
+
+
+    def __len__(self):
+        return len(self.paths) - 1
+
+    def __getitem__(self, index):
+        prev = self.paths[index]
+        curr = self.paths[index+1]
+        data = {}
+        data[self.image_key] = self._load_im(curr)
+        data[self.cond_key] = self._load_im(prev)
+        return data
+
+    def _load_im(self, filename):
+        im = Image.open(filename).convert("RGB")
+        return self.tform(im)
+
+
