@@ -56,7 +56,7 @@ class DDPM(pl.LightningModule):
                  load_only_unet=False,
                  monitor="val/loss",
                  use_ema=True,
-                 first_stage_key="image",
+                 first_stage_key="image", #key in batches (dicts) of the target signal to denoise
                  image_size=256,
                  channels=3,
                  log_every_t=100,
@@ -68,7 +68,7 @@ class DDPM(pl.LightningModule):
                  original_elbo_weight=0.,
                  v_posterior=0.,  # weight for choosing posterior variance as sigma = (1-v) * beta_tilde + v * beta
                  l_simple_weight=1.,
-                 conditioning_key=None,
+                 conditioning_key=None, #defines the type of conditioning ie cross attention, concatenation, hybrid
                  parameterization="eps",  # all assuming fixed variance schedules
                  scheduler_config=None,
                  use_positional_encodings=False,
@@ -79,7 +79,7 @@ class DDPM(pl.LightningModule):
                  ):
         super().__init__()
         assert parameterization in ["eps", "x0"], 'currently only supporting "eps" and "x0"'
-        self.parameterization = parameterization
+        self.parameterization = parameterization #DDPM parameterization, if eps estimates noise, else estimates initial image?
         print(f"{self.__class__.__name__}: Running in {self.parameterization}-prediction mode")
         self.cond_stage_model = None
         self.clip_denoised = clip_denoised
@@ -88,7 +88,7 @@ class DDPM(pl.LightningModule):
         self.image_size = image_size  # try conv?
         self.channels = channels
         self.use_positional_encodings = use_positional_encodings
-        self.model = DiffusionWrapper(unet_config, conditioning_key)
+        self.model = DiffusionWrapper(unet_config, conditioning_key) #U-Net
         count_params(self.model, verbose=True)
         self.use_ema = use_ema
         if self.use_ema:
@@ -267,51 +267,60 @@ class DDPM(pl.LightningModule):
         log_variance = extract_into_tensor(self.log_one_minus_alphas_cumprod, t, x_start.shape)
         return mean, variance, log_variance
 
+    #predicts x_0 from x_t and epsilon with posterior sampling distribution
     def predict_start_from_noise(self, x_t, t, noise):
         return (
                 extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t -
                 extract_into_tensor(self.sqrt_recipm1_alphas_cumprod, t, x_t.shape) * noise
         )
 
+    #estimates posterior q(x_{t-1}|x_t, x_0) mean (eq 11 plugged in 7 in DDPM) and variance (ie \tilde\beta_t, eq 7 DDPM) from a batch of images?
     def q_posterior(self, x_start, x_t, t):
         posterior_mean = (
                 extract_into_tensor(self.posterior_mean_coef1, t, x_t.shape) * x_start +
                 extract_into_tensor(self.posterior_mean_coef2, t, x_t.shape) * x_t
-        )
-        posterior_variance = extract_into_tensor(self.posterior_variance, t, x_t.shape)
+        ) #mean from q(x_{t-1}|x_t, x_0)  estimated from eq 7 with plugged in estimation x_start for x_0 (eq 11)
+        posterior_variance = extract_into_tensor(self.posterior_variance, t, x_t.shape) #variance schedule \tilde\beta_t from q(x_{t-1}|x_t, x_0) estimated from eq 7
         posterior_log_variance_clipped = extract_into_tensor(self.posterior_log_variance_clipped, t, x_t.shape)
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
+    #estimates posterior q(x_{t-1}|x_t, x_0) mean and variance given x_t at step t
     def p_mean_variance(self, x, t, clip_denoised: bool):
         model_out = self.model(x, t)
+
+        #estimates x_recon:=x_0 (estimated at step t)
         if self.parameterization == "eps":
-            x_recon = self.predict_start_from_noise(x, t=t, noise=model_out)
+            x_recon = self.predict_start_from_noise(x, t=t, noise=model_out) #x_0 estimated from the noise estimated and x_t:=x
         elif self.parameterization == "x0":
-            x_recon = model_out
+            x_recon = model_out #model directly estimates x_0
         if clip_denoised:
             x_recon.clamp_(-1., 1.)
 
+        #estimates mean and variance from x_t and estimated x_0
         model_mean, posterior_variance, posterior_log_variance = self.q_posterior(x_start=x_recon, x_t=x, t=t)
         return model_mean, posterior_variance, posterior_log_variance
 
+    #takes x_t as input at step t, returns denoised x_{t-1}
     @torch.no_grad()
     def p_sample(self, x, t, clip_denoised=True, repeat_noise=False):
         b, *_, device = *x.shape, x.device
+        #estimates posterior q(x_{t-1}|x_t, x_0) mean and variance given x_t at step t
         model_mean, _, model_log_variance = self.p_mean_variance(x=x, t=t, clip_denoised=clip_denoised)
         noise = noise_like(x.shape, device, repeat_noise)
         # no noise when t == 0
         nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1)))
-        return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
+        return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise #denoised x_{t-1} (step 4 sampling alg DDPM)
 
+    #samples Monte Carlo backward sampling chain
     @torch.no_grad()
     def p_sample_loop(self, shape, return_intermediates=False):
         device = self.betas.device
         b = shape[0]
-        img = torch.randn(shape, device=device)
+        img = torch.randn(shape, device=device) #x_T
         intermediates = [img]
         for i in tqdm(reversed(range(0, self.num_timesteps)), desc='Sampling t', total=self.num_timesteps):
             img = self.p_sample(img, torch.full((b,), i, device=device, dtype=torch.long),
-                                clip_denoised=self.clip_denoised)
+                                clip_denoised=self.clip_denoised) #denoised image x_{t-1}
             if i % self.log_every_t == 0 or i == self.num_timesteps - 1:
                 intermediates.append(img)
         if return_intermediates:
@@ -325,6 +334,7 @@ class DDPM(pl.LightningModule):
         return self.p_sample_loop((batch_size, channels, image_size, image_size),
                                   return_intermediates=return_intermediates)
 
+    #samples forward diffusion process?
     def q_sample(self, x_start, t, noise=None):
         noise = default(noise, lambda: torch.randn_like(x_start))
         return (extract_into_tensor(self.sqrt_alphas_cumprod, t, x_start.shape) * x_start +
@@ -490,11 +500,11 @@ class LatentDiffusion(DDPM):
                  first_stage_config,
                  cond_stage_config,
                  num_timesteps_cond=None,
-                 cond_stage_key="image",
+                 cond_stage_key="image", #key in batches (:=dicts) of the conditioning signal (eg could be images, text…)
                  cond_stage_trainable=False,
                  concat_mode=True,
                  cond_stage_forward=None,
-                 conditioning_key=None,
+                 conditioning_key=None, #defines the type of conditioning ie cross attention, concatenation, hybrid
                  scale_factor=1.0,
                  scale_by_std=False,
                  unet_trainable=True,
@@ -566,7 +576,7 @@ class LatentDiffusion(DDPM):
 
     def instantiate_first_stage(self, config):
         model = instantiate_from_config(config)
-        self.first_stage_model = model.eval()
+        self.first_stage_model = model.eval()  #encodeur-decoder VAE
         self.first_stage_model.train = disabled_train
         for param in self.first_stage_model.parameters():
             param.requires_grad = False
@@ -582,7 +592,7 @@ class LatentDiffusion(DDPM):
                 # self.be_unconditional = True
             else:
                 model = instantiate_from_config(config)
-                self.cond_stage_model = model.eval()
+                self.cond_stage_model = model.eval()  #feature extractor pour conditioneur?
                 self.cond_stage_model.train = disabled_train
                 for param in self.cond_stage_model.parameters():
                     param.requires_grad = False
@@ -590,7 +600,7 @@ class LatentDiffusion(DDPM):
             assert config != '__is_first_stage__'
             assert config != '__is_unconditional__'
             model = instantiate_from_config(config)
-            self.cond_stage_model = model
+            self.cond_stage_model = model #CLIP for conditioning
 
     def _get_denoise_row_from_list(self, samples, desc='', force_no_decoder_quantization=False):
         denoise_row = []
@@ -604,6 +614,7 @@ class LatentDiffusion(DDPM):
         denoise_grid = make_grid(denoise_grid, nrow=n_imgs_per_row)
         return denoise_grid
 
+    #sample dans l'espace latent VAE selon la distribution paramétrée apprise, ou renvoie directement le sample encodé
     def get_first_stage_encoding(self, encoder_posterior):
         if isinstance(encoder_posterior, DiagonalGaussianDistribution):
             z = encoder_posterior.sample()
@@ -718,30 +729,46 @@ class LatentDiffusion(DDPM):
     @torch.no_grad()
     def get_input(self, batch, k, return_first_stage_outputs=False, force_c_encode=False,
                   cond_key=None, return_original_cond=False, bs=None, return_x=False):
-        x = super().get_input(batch, k)
+        '''
+        Returns the inputs and outputs required for a diffusion sampling process and to supervise the model.
+        Inputs:
+            - k: string, self.first_stage_key, key for target image x_0 in the batch
+        Output:
+            - (default): list [z, c] with z embedding in VAE latent space of target image x_0, c conditioning signal
+            - if return_first_stage_outputs: adds x_rec, decoding of z for reconstruction of input image by VAE (without diffusion sampling)
+            - if force_c_encode: c is the feature encoding of the conditioning signal (eg with CLIP)
+            - if return_x: adds x, target image x_0
+            - if return_original_cond: adds xc, conditioning signal (non-encoded)
+        '''
+        #encodes target image in VAE latent space
+        x = super().get_input(batch, k) #image target clean x_0
         if bs is not None:
             x = x[:bs]
         x = x.to(self.device)
-        encoder_posterior = self.encode_first_stage(x)
-        z = self.get_first_stage_encoding(encoder_posterior).detach()
+        encoder_posterior = self.encode_first_stage(x)  #encode image target clean, latent clean encodé E(x_0)
+        z = self.get_first_stage_encoding(encoder_posterior).detach() #sample espace latent VAE (dans ce cas, juste encoder_posterior scalé)
 
+        #gets conditioning image xc and encodes it with feature encoder eg CLIP
         if self.model.conditioning_key is not None:
-            if cond_key is None:
+            #gets conditioning image
+            if cond_key is None: #mostly the case
                 cond_key = self.cond_stage_key
             if cond_key != self.first_stage_key:
                 if cond_key in ['caption', 'coordinates_bbox', "txt"]:
                     xc = batch[cond_key]
                 elif cond_key == 'class_label':
                     xc = batch
-                else:
-                    xc = super().get_input(batch, cond_key).to(self.device)
+                else: #mostly the case, cond_key is self.cond_stage_key and different from input imahe
+                    xc = super().get_input(batch, cond_key).to(self.device) #conditioning image
             else:
                 xc = x
+
+            #encodes conditioning image with feature encoder (eg CLIP)
             if not self.cond_stage_trainable or force_c_encode:
                 if isinstance(xc, dict) or isinstance(xc, list):
                     c = self.get_learned_conditioning(xc)
                 else:
-                    c = self.get_learned_conditioning(xc.to(self.device))
+                    c = self.get_learned_conditioning(xc.to(self.device)) #encoded conditioning
             else:
                 c = xc
             if bs is not None:
@@ -752,13 +779,15 @@ class LatentDiffusion(DDPM):
                 ckey = __conditioning_keys__[self.model.conditioning_key]
                 c = {ckey: c, 'pos_x': pos_x, 'pos_y': pos_y}
 
-        else:
+        else: #no conditioning in this case
             c = None
             xc = None
             if self.use_positional_encodings:
                 pos_x, pos_y = self.compute_latent_shifts(batch)
                 c = {'pos_x': pos_x, 'pos_y': pos_y}
-        out = [z, c]
+        
+        #outputs
+        out = [z, c] #z VAE latent for target image x_0, c encoding for conditioning signal
         if return_first_stage_outputs:
             xrec = self.decode_first_stage(z)
             out.extend([x, xrec])
@@ -768,6 +797,7 @@ class LatentDiffusion(DDPM):
             out.append(xc)
         return out
 
+    #decoder
     @torch.no_grad()
     def decode_first_stage(self, z, predict_cids=False, force_not_quantize=False):
         if predict_cids:
@@ -828,6 +858,7 @@ class LatentDiffusion(DDPM):
             else:
                 return self.first_stage_model.decode(z)
 
+    #encoder
     @torch.no_grad()
     def encode_first_stage(self, x):
         if hasattr(self, "split_input_params"):
@@ -894,6 +925,7 @@ class LatentDiffusion(DDPM):
 
         return [rescale_bbox(b) for b in bboxes]
 
+    #fonction dans laquelle est formellement appele le U-Net
     def apply_model(self, x_noisy, t, cond, return_ids=False):
 
         if isinstance(cond, dict):
@@ -905,7 +937,7 @@ class LatentDiffusion(DDPM):
             key = 'c_concat' if self.model.conditioning_key == 'concat' else 'c_crossattn'
             cond = {key: cond}
 
-        if hasattr(self, "split_input_params"):
+        if hasattr(self, "split_input_params"): #pas utile?
             assert len(cond) == 1  # todo can only deal with one conditioning atm
             assert not return_ids
             ks = self.split_input_params["ks"]  # eg. (128, 128)
@@ -990,7 +1022,8 @@ class LatentDiffusion(DDPM):
             x_recon = fold(o) / normalization
 
         else:
-            x_recon = self.model(x_noisy, t, **cond)
+            # print('apply_model, x_noisy : ', x_noisy is None)
+            x_recon = self.model(x_noisy, t, **cond)  #applies the U-Net, DiffusionWrapper
 
         if isinstance(x_recon, tuple) and not return_ids:
             return x_recon[0]
@@ -1050,11 +1083,13 @@ class LatentDiffusion(DDPM):
 
         return loss, loss_dict
 
+    #estimates posterior q(x_{t-1}|x_t, x_0, c) mean and variance given x_t and conditioning c at step t
     def p_mean_variance(self, x, c, t, clip_denoised: bool, return_codebook_ids=False, quantize_denoised=False,
                         return_x0=False, score_corrector=None, corrector_kwargs=None):
         t_in = t
-        model_out = self.apply_model(x, t_in, c, return_ids=return_codebook_ids)
 
+        #estimates x_recon=:x_0 at step t from x_t and conditioning c
+        model_out = self.apply_model(x, t_in, c, return_ids=return_codebook_ids) #function that calls the U-Net
         if score_corrector is not None:
             assert self.parameterization == "eps"
             model_out = score_corrector.modify_score(self, model_out, x, t, c, **corrector_kwargs)
@@ -1073,6 +1108,8 @@ class LatentDiffusion(DDPM):
             x_recon.clamp_(-1., 1.)
         if quantize_denoised:
             x_recon, _, [_, _, indices] = self.first_stage_model.quantize(x_recon)
+
+        #estimates mean and variance at step t from x_t and estimated x_0
         model_mean, posterior_variance, posterior_log_variance = self.q_posterior(x_start=x_recon, x_t=x, t=t)
         if return_codebook_ids:
             return model_mean, posterior_variance, posterior_log_variance, logits
@@ -1081,6 +1118,7 @@ class LatentDiffusion(DDPM):
         else:
             return model_mean, posterior_variance, posterior_log_variance
 
+    #takes x_t and conditioning c as input at step t, returns denoised x_{t-1}
     @torch.no_grad()
     def p_sample(self, x, c, t, clip_denoised=False, repeat_noise=False,
                  return_codebook_ids=False, quantize_denoised=False, return_x0=False,
@@ -1105,6 +1143,7 @@ class LatentDiffusion(DDPM):
         # no noise when t == 0
         nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1)))
 
+        #denoised x_{t-1} (step 4 sampling alg DDPM)
         if return_codebook_ids:
             return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise, logits.argmax(dim=1)
         if return_x0:
@@ -1112,6 +1151,7 @@ class LatentDiffusion(DDPM):
         else:
             return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
 
+    #methode qui definit la MC pour sampler, legerement diff de p_sample_loop
     @torch.no_grad()
     def progressive_denoising(self, cond, shape, verbose=True, callback=None, quantize_denoised=False,
                               img_callback=None, mask=None, x0=None, temperature=1., noise_dropout=0.,
@@ -1145,6 +1185,7 @@ class LatentDiffusion(DDPM):
         if type(temperature) == float:
             temperature = [temperature] * timesteps
 
+        #sample backward process
         for i in iterator:
             ts = torch.full((b,), i, device=self.device, dtype=torch.long)
             if self.shorten_cond_schedule:
@@ -1156,7 +1197,7 @@ class LatentDiffusion(DDPM):
                                             clip_denoised=self.clip_denoised,
                                             quantize_denoised=quantize_denoised, return_x0=True,
                                             temperature=temperature[i], noise_dropout=noise_dropout,
-                                            score_corrector=score_corrector, corrector_kwargs=corrector_kwargs)
+                                            score_corrector=score_corrector, corrector_kwargs=corrector_kwargs) #iteration, diff than for p_sample_loop
             if mask is not None:
                 assert x0 is not None
                 img_orig = self.q_sample(x0, ts)
@@ -1168,6 +1209,7 @@ class LatentDiffusion(DDPM):
             if img_callback: img_callback(img, i)
         return img, intermediates
 
+    #samples Monte Carlo backward sampling chain
     @torch.no_grad()
     def p_sample_loop(self, cond, shape, return_intermediates=False,
                       x_T=None, verbose=True, callback=None, timesteps=None, quantize_denoised=False,
@@ -1196,16 +1238,17 @@ class LatentDiffusion(DDPM):
             assert x0 is not None
             assert x0.shape[2:3] == mask.shape[2:3]  # spatial size has to match
 
+        #itere sur les timesteps en temps inverse
         for i in iterator:
             ts = torch.full((b,), i, device=device, dtype=torch.long)
             if self.shorten_cond_schedule:
                 assert self.model.conditioning_key != 'hybrid'
                 tc = self.cond_ids[ts].to(cond.device)
-                cond = self.q_sample(x_start=cond, t=tc, noise=torch.randn_like(cond))
+                cond = self.q_sample(x_start=cond, t=tc, noise=torch.randn_like(cond)) #~processus forward, noise conditionnement? pourquoi?
 
             img = self.p_sample(img, cond, ts,
                                 clip_denoised=self.clip_denoised,
-                                quantize_denoised=quantize_denoised)
+                                quantize_denoised=quantize_denoised) #methode qui definit une iteration du sampling du DDPM
             if mask is not None:
                 img_orig = self.q_sample(x0, ts)
                 img = img_orig * mask + (1. - mask) * img
@@ -1219,6 +1262,7 @@ class LatentDiffusion(DDPM):
             return img, intermediates
         return img
 
+    #methode pour sampler le DDPM, generation
     @torch.no_grad()
     def sample(self, cond, batch_size=16, return_intermediates=False, x_T=None,
                verbose=True, timesteps=None, quantize_denoised=False,
@@ -1235,7 +1279,7 @@ class LatentDiffusion(DDPM):
                                   shape,
                                   return_intermediates=return_intermediates, x_T=x_T,
                                   verbose=verbose, timesteps=timesteps, quantize_denoised=quantize_denoised,
-                                  mask=mask, x0=x0)
+                                  mask=mask, x0=x0) #methode qui definit la MC pour sampler
 
     @torch.no_grad()
     def sample_log(self, cond, batch_size, ddim, ddim_steps, **kwargs):
@@ -1275,6 +1319,9 @@ class LatentDiffusion(DDPM):
                    plot_diffusion_rows=True, unconditional_guidance_scale=1., unconditional_guidance_label=None,
                    use_ema_scope=True,
                    **kwargs):
+        '''
+        Performs diffusion forward and backward process on a given batch and returns logs for tensorboard
+        '''
         ema_scope = self.ema_scope if use_ema_scope else nullcontext
         use_ddim = ddim_steps is not None
 
@@ -1286,8 +1333,9 @@ class LatentDiffusion(DDPM):
                                            bs=N)
         N = min(x.shape[0], N)
         n_row = min(x.shape[0], n_row)
-        log["inputs"] = x
-        log["reconstruction"] = xrec
+        log["inputs"] = x #target image x_0
+        log["reconstruction"] = xrec #VAE reconstruction of image input without diffusion in latent space
+        #gets conditioning image
         if self.model.conditioning_key is not None:
             if hasattr(self.cond_stage_model, "decode"):
                 xc = self.cond_stage_model.decode(c)
@@ -1303,7 +1351,7 @@ class LatentDiffusion(DDPM):
             if ismap(xc):
                 log["original_conditioning"] = self.to_rgb(xc)
 
-        if plot_diffusion_rows:
+        if plot_diffusion_rows: #computes steps of forward process and logs it
             # get diffusion row
             diffusion_row = list()
             z_start = z[:n_row]
@@ -1321,13 +1369,13 @@ class LatentDiffusion(DDPM):
             diffusion_grid = make_grid(diffusion_grid, nrow=diffusion_row.shape[0])
             log["diffusion_row"] = diffusion_grid
 
-        if sample:
+        if sample: #sampling of the conditional diffusion model with DDIM for accelerated inference without logging intermediates
             # get denoise row
             with ema_scope("Sampling"):
                 samples, z_denoise_row = self.sample_log(cond=c,batch_size=N,ddim=use_ddim,
-                                                         ddim_steps=ddim_steps,eta=ddim_eta)
+                                                         ddim_steps=ddim_steps,eta=ddim_eta) #samples generative process in latent space
                 # samples, z_denoise_row = self.sample(cond=c, batch_size=N, return_intermediates=True)
-            x_samples = self.decode_first_stage(samples)
+            x_samples = self.decode_first_stage(samples) #decodes generated samples to image space
             log["samples"] = x_samples
             if plot_denoise_rows:
                 denoise_grid = self._get_denoise_row_from_list(z_denoise_row)
@@ -1345,7 +1393,7 @@ class LatentDiffusion(DDPM):
                 x_samples = self.decode_first_stage(samples.to(self.device))
                 log["samples_x0_quantized"] = x_samples
 
-        if unconditional_guidance_scale > 1.0:
+        if unconditional_guidance_scale > 1.0: #sampling with classifier free guidance
             uc = self.get_unconditional_conditioning(N, unconditional_guidance_label)
             # uc = torch.zeros_like(c)
             with ema_scope("Sampling with classifier-free guidance"):
@@ -1442,11 +1490,11 @@ class LatentDiffusion(DDPM):
         x = 2. * (x - x.min()) / (x.max() - x.min()) - 1.
         return x
 
-
+#Class wrapper du U-Net, appelle son forward pass dans forward
 class DiffusionWrapper(pl.LightningModule):
     def __init__(self, diff_model_config, conditioning_key):
         super().__init__()
-        self.diffusion_model = instantiate_from_config(diff_model_config)
+        self.diffusion_model = instantiate_from_config(diff_model_config) # U-Net
         self.conditioning_key = conditioning_key
         assert self.conditioning_key in [None, 'concat', 'crossattn', 'hybrid', 'adm', 'hybrid-adm']
 
