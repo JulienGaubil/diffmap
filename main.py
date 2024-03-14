@@ -27,12 +27,21 @@ MULTINODE_HACKS = False
 def rank_zero_print(*args):
     print(*args)
 
-def modify_weights(w, scale = 1e-6, n=2):
+def modify_weights(w, scale = 1e-6, n=2, dim=1, copy_weights=False): #à modifier
+    '''
+    Modifies input conv kernel weights to multiply their number of channel
+    Inputs:
+    - w: torch.tensor(C_out, C_in, k, k), tensor of conv kernel, where C_out number of output channels, C_in number of input channels, k kernel size
+    - scale: float, magnitude of random weights if random initialization
+    - n: int, multiplication factor of the number of channels
+    - dim: int, axis along which to repeat/randomly initialize input weights
+    - copy_weights: bool, initialization method for new weights, random by default, copy of w if True
+    '''
     """Modify weights to accomodate concatenation to unet"""
-    extra_w = scale*torch.randn_like(w)
+    extra_w = w.clone() if copy_weights else scale*torch.randn_like(w) #new weights to add
     new_w = w.clone()
-    for i in range(n):
-        new_w = torch.cat((new_w, extra_w.clone()), dim=1)
+    for i in range(n-1): # multiplies number of channels
+        new_w = torch.cat((new_w, extra_w.clone()), dim=dim)
     return new_w
 
 
@@ -680,22 +689,57 @@ if __name__ == "__main__":
                 rank_zero_print(f"Found nested key 'state_dict' in checkpoint, loading this instead")
                 old_state = old_state["state_dict"]
 
-            #Check if we need to port weights from 4ch input to 8ch
+            #Check if we need to port input weights from 4ch input to n*4ch
             in_filters_load = old_state["model.diffusion_model.input_blocks.0.0.weight"]
             new_state = model.state_dict()
             in_filters_current = new_state["model.diffusion_model.input_blocks.0.0.weight"]
             in_shape = in_filters_current.shape
+            #initializes new input weights if input dims don't match
             if in_shape != in_filters_load.shape:
-                rank_zero_print("Modifying weights to double number of input channels")
-                keys_to_change = [
+                rank_zero_print("Modifying weights to multiply their number of input channels")
+                keys_to_change_inputs = [
                     "model.diffusion_model.input_blocks.0.0.weight",
                     "model_ema.diffusion_modelinput_blocks00weight",
                 ]
                 scale = 1e-8
-                for k in keys_to_change:
-                    print("modifying input weights for compatibitlity")
-                    old_state[k] = modify_weights(old_state[k], scale=scale, n=in_shape//4 - 1)
+                for k in keys_to_change_inputs:
+                    input_weight_new = new_state[k] # size (C_out, C_in, kernel_size, kernel_size)
+                    C_in_new = input_weight_new.size(1)
+                    C_in_old = old_state[k].size(1)
 
+                    if C_in_new % C_in_old != 0 or  C_in_new < C_in_old:
+                        raise TypeError(f"Number of input channels for checkpoint and new U-Net should be multiple, got {C_in_new} and {C_in_old}")
+                    print("modifying input weights for compatibitlity")
+                    #repeats checkpoint weights C_in_new//C_in_old times along input channels=dim1
+                    old_state[k] = modify_weights(old_state[k], scale=scale, n=C_in_new//C_in_old, dim=1, copy_weights=True)
+                    
+            #check if we need to port output weights from 4ch to n*4 ch
+            out_filters_load = old_state["model.diffusion_model.out.2.weight"]
+            out_filters_current = new_state["model.diffusion_model.out.2.weight"]
+            out_shape = out_filters_current.shape
+            if out_shape != out_filters_load.shape:
+                rank_zero_print("Modifying weights and biases to multiply their number of output channels")
+                keys_to_change_outputs = [
+                    "model.diffusion_model.out.2.weight",
+                    "model.diffusion_model.out.2.bias",
+                    "model_ema.diffusion_modelout2weight",
+                    "model_ema.diffusion_modelout2bias",
+                ]
+                #initializes randomly new output weights if input dims don't match
+                scale = 1e-8
+                for k in keys_to_change_outputs:
+                    print("modifying output weights for compatibitlity")
+                    output_weight_new = new_state[k] # size (C_out, C_in, kernel_size, kernel_size)
+                    C_out_new = output_weight_new.size(0)
+                    C_out_old = old_state[k].size(0)
+
+                    if C_out_new % C_out_old != 0 or  C_out_new < C_out_old:
+                        raise TypeError(f"Number of input channels for checkpoint and new U-Net should be multiple, got {C_out_new} and {C_out_old}")
+                    print("modifying input weights for compatibitlity")
+                    #repeats checkpoint weights C_in_new//C_in_old times along output weights channels=dim0
+                    old_state[k] = modify_weights(old_state[k], n=C_out_new//C_out_old, dim=0, copy_weights=True)
+
+            #loads checkpoint weights
             m, u = model.load_state_dict(old_state, strict=False)
             if len(m) > 0:
                 rank_zero_print("missing keys:")
