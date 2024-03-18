@@ -2419,30 +2419,39 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
         else:
             raise NotImplementedError()
         
-        loss_simple = 0
-        for k in range(len(self.modalities)):
-            modality = self.modalities[k]
-            loss_simple += self.get_loss(model_output[:, k*4:(k+1)*4, ...], target[:, k*4:(k+1)*4, ...], mean=False).mean([1, 2, 3])
-        loss_dict.update({f'{prefix}/loss_simple': loss_simple.mean()})
-
+        loss_simple, loss_gamma, loss, loss_vlb  = 0, 0, 0, 0
         logvar_t = self.logvar[t].to(self.device)
-        loss = loss_simple / torch.exp(logvar_t) + logvar_t
-        # loss = loss_simple / torch.exp(self.logvar) + self.logvar
+
         if self.learn_logvar:
-            loss_dict.update({f'{prefix}/loss_gamma': loss.mean()})
             loss_dict.update({'logvar': self.logvar.data.mean()})
 
-        loss = self.l_simple_weight * loss.mean()
-
-        loss_vlb = 0
+        
         for k in range(len(self.modalities)):
             modality = self.modalities[k]
-            loss_vlb += self.get_loss(model_output[:, k*4:(k+1)*4, ...], target[:, k*4:(k+1)*4, ...], mean=False).mean(dim=(1, 2, 3))
-        loss_vlb = (self.lvlb_weights[t] * loss_vlb).mean()
-        loss_dict.update({f'{prefix}/loss_vlb': loss_vlb})
-        loss += (self.original_elbo_weight * loss_vlb)
-        loss_dict.update({f'{prefix}/loss': loss})
+            loss_simple_m = self.get_loss(model_output[:, k*4:(k+1)*4, ...], target[:, k*4:(k+1)*4, ...], mean=False).mean([1, 2, 3])
+            loss_simple += loss_simple_m
+            loss_dict.update({f'{prefix}_{modality}/loss_simple': loss_simple_m.clone().detach().mean()})
 
+            loss_gamma_m = loss_simple_m / torch.exp(logvar_t) + logvar_t
+            if self.learn_logvar:
+                loss_dict.update({f'{prefix}_{modality}/loss_gamma': loss_gamma_m.mean()})
+            loss_gamma += loss_gamma_m
+
+            loss_vlb_m = self.get_loss(model_output[:, k*4:(k+1)*4, ...], target[:, k*4:(k+1)*4, ...], mean=False).mean(dim=(1, 2, 3))
+            loss_vlb_m = (self.lvlb_weights[t] * loss_vlb_m).mean()
+            loss_dict.update({f'{prefix}_{modality}/loss_vlb': loss_vlb_m})
+            loss_vlb += loss_vlb_m
+
+            loss_m = self.l_simple_weight * loss_gamma_m.mean() + (self.original_elbo_weight * loss_vlb_m)
+            loss_dict.update({f'{prefix}_{modality}/loss': loss_m})
+            loss += loss_m
+        
+        loss_dict.update({f'{prefix}/loss_simple': loss_simple.mean()})
+        if self.learn_logvar:
+            loss_dict.update({f'{prefix}/loss_gamma': loss_gamma.mean()})
+        loss_dict.update({f'{prefix}/loss_vlb': loss_vlb})
+        loss_dict.update({f'{prefix}/loss': loss})
+    
         return loss, loss_dict
     
     def configure_optimizers(self):

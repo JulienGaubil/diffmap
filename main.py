@@ -711,7 +711,7 @@ if __name__ == "__main__":
 
                     assert  C_in_new % C_in_old == 0 and  C_in_new >= C_in_old, f"Number of input channels for checkpoint and new U-Net should be multiple, got {C_in_new} and {C_in_old}"
                     print("modifying input weights for compatibitlity")
-                    copy_weights = False
+                    copy_weights = True
                     scale = 1/(C_in_new//C_in_old) if copy_weights else 1e-8 #scales input to prevent activations to blow up when copying
                     #repeats checkpoint weights C_in_new//C_in_old times along input channels=dim1
                     old_state[k] = modify_weights(old_state[k], scale=scale, n=C_in_new//C_in_old, dim=1, copy_weights=copy_weights)
