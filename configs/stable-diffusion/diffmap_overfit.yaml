@@ -7,17 +7,17 @@ model:
     num_timesteps_cond: 1
     log_every_t: 200 #when logging generated samples, frequency of logging for intermediate samples  
     timesteps: 1000 #sampling timesteps in forward/backward
-    first_stage_key: "trgt"
-    cond_stage_key: "ctxt"
-    image_size: 64
+    first_stage_key: "trgt" #key in batch for the noised signal
+    cond_stage_key: "ctxt" #key in batch for the clean conditioning signal
+    image_size: 64 #2D resolution in the latent space, also controls sampling resolution (x8)
     channels: 8 #number of channels in latent space
     cond_stage_trainable: false   # Note: different from the one we trained before
     conditioning_key: crossattn
     monitor: val/loss_simple_ema
     scale_factor: 0.18215
-    unet_trainable: conv_io  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out)
+    unet_trainable: conv_io_attn  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn)
 
-    scheduler_config: # 10000 warmup steps
+    scheduler_config: # 1000 warmup steps
       target: ldm.lr_scheduler.LambdaLinearScheduler
       params:
         warm_up_steps: [ 1000 ]
@@ -39,7 +39,7 @@ model:
         num_heads: 8
         use_spatial_transformer: True
         transformer_depth: 1
-        context_dim: 768
+        context_dim: 768  #dim of conditioning?
         use_checkpoint: True
         legacy: False
 
@@ -87,15 +87,11 @@ data:
         image_transforms:
         - target: torchvision.transforms.Resize
           params:
-            size: 512  #train img resolution
+            size: 512 #train img resolution
             interpolation: 3
         - target: torchvision.transforms.CenterCrop
           params:
             size: 512
-        # - target: torchvision.transforms.RandomCrop
-        #   params:
-        #     size: 512  #train random cropping size
-        # - target: torchvision.transforms.RandomHorizontalFlip
     validation: #params val dataset
       target: ldm.data.llff.LLFFnfpDataset
       params:

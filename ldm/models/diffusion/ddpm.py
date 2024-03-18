@@ -2457,6 +2457,13 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
             print("Training only unet input and output conv layers")
             params.extend(list(self.model.diffusion_model.input_blocks[0][0].parameters()))
             params.extend(list(self.model.diffusion_model.out[2].parameters()))
+        elif self.unet_trainable == "conv_io_attn":
+            print("Training unet input, output conv and cross-attention layers")
+            params.extend(list(self.model.diffusion_model.input_blocks[0][0].parameters()))
+            params.extend(list(self.model.diffusion_model.out[2].parameters()))
+            for n, m in self.model.named_modules():
+                if isinstance(m, CrossAttention) and n.endswith('attn2'):
+                    params.extend(m.parameters())
         else:
             raise ValueError(f"Unrecognised setting for unet_trainable: {self.unet_trainable}")
 

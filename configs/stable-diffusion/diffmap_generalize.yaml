@@ -15,7 +15,7 @@ model:
     conditioning_key: crossattn
     monitor: val/loss_simple_ema
     scale_factor: 0.18215
-    unet_trainable: conv_io  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out)
+    unet_trainable: conv_io_attn  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn)
 
 
     scheduler_config: # 10000 warmup steps
