@@ -1,0 +1,93 @@
+model:
+  base_learning_rate: 4.5e-06
+  target: ldm.models.autoencoder.AutoencoderKL
+  params:
+    image_key: optical_flow #key of the target signal in the dataset samples dict
+    ckpt_path: "models/first_stage_models/kl-f8/model.ckpt"
+    monitor: val/rec_loss
+    embed_dim: 4
+    lossconfig:
+      target: ldm.modules.losses.LPIPSWithDiscriminator
+      params:
+        disc_start: 50001
+        kl_weight: 1.0e-06
+        disc_weight: 0.5
+    ddconfig:
+      double_z: true
+      z_channels: 4
+      resolution: 256
+      in_channels: 3
+      out_ch: 3
+      ch: 128
+      ch_mult:
+      - 1
+      - 2
+      - 4
+      - 4
+      num_res_blocks: 2
+      attn_resolutions: []
+      dropout: 0.0
+
+#params datamodules and datasets
+data:
+  target: main.DataModuleFromConfig
+  params:
+    batch_size: 4
+    num_workers: 4
+    num_val_workers: 0 # Avoid a weird val dataloader issue
+    train: #params train dataset
+      target: ldm.data.llff.LLFFDiffmapDataset
+      params:
+        root_dir: datasets/llff
+        scenes:  #scenes used
+        - horns
+        n_val_samples_scene: 4  #number of val pairs per scene
+        split: train
+        image_transforms:
+        - target: torchvision.transforms.Resize
+          params:
+            size: 128 #train img resolution
+            interpolation: 3
+        - target: torchvision.transforms.CenterCrop
+          params:
+            size: 128
+    validation: #params val dataset
+      target: ldm.data.llff.LLFFDiffmapDataset
+      params:
+        root_dir: datasets/llff
+        split: val
+        scenes:  #scenes used
+        - horns
+        n_val_samples_scene: 4  #number of val pairs per scene
+        image_transforms:
+        - target: torchvision.transforms.Resize
+          params:
+            size: 128 #val img resolution
+            interpolation: 3
+        - target: torchvision.transforms.CenterCrop
+          params:
+            size: 128
+
+
+lightning:
+  # find_unused_parameters: false
+  modelcheckpoint:
+    params:
+      every_n_train_steps: 1000
+  callbacks: #configs for image logger
+    image_logger:
+      target: main.ImageLoggerAutoEncoder
+      params:
+        batch_frequency: 200 #frequency of logging images (counted in iterations) for train and val
+        max_images: 4 #number of samples logged
+        increase_log_steps: False
+
+  trainer:
+    benchmark: True
+    check_val_every_n_epoch: 10 #frequency of validation in epochs
+    # val_check_interval: 5 #frequency of validation in iterations
+    # limit_val_batches: 0.0  # to disable validation
+    num_sanity_val_steps: 0
+    accumulate_grad_batches: 1
+    max_epochs: 1000 #max number of epochs performed, 1000 is the default
+    max_steps: 10000  #max number of iterations performed, 1000 is the default
