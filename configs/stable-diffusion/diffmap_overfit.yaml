@@ -16,6 +16,9 @@ model:
     monitor: val/loss_simple_ema
     scale_factor: 0.18215
     unet_trainable: conv_io_attn  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn)
+    modalities:
+    - trgt
+    - optical_flow
 
     scheduler_config: # 1000 warmup steps
       target: ldm.lr_scheduler.LambdaLinearScheduler
@@ -116,7 +119,7 @@ lightning:
       every_n_train_steps: 1000
   callbacks: #configs for image logger
     image_logger:
-      target: main.ImageLogger
+      target: main.ImageLoggerDiffmap
       params:
         batch_frequency: 400 #frequency of logging images (counted in iterations) for train and val
         max_images: 4 #number of samples logged

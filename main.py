@@ -19,6 +19,8 @@ from pytorch_lightning.utilities import rank_zero_info
 
 from ldm.data.base import Txt2ImgIterableBaseDataset
 from ldm.util import instantiate_from_config
+from flow_vis_torch import flow_to_color
+
 
 
 MULTINODE_HACKS = False
@@ -438,6 +440,61 @@ class ImageLogger(Callback):
         if hasattr(pl_module, 'calibrate_grad_norm'):
             if (pl_module.calibrate_grad_norm and batch_idx % 25 == 0) and batch_idx > 0:
                 self.log_gradients(trainer, pl_module, batch_idx=batch_idx)
+
+
+class ImageLoggerDiffmap(ImageLogger):
+    def __init__(self, batch_frequency, max_images, clamp=True, increase_log_steps=True,
+                 rescale=True, disabled=False, log_on_batch_idx=False, log_first_step=False,
+                 log_images_kwargs=None, log_all_val=False):
+        super().__init__(batch_frequency, max_images, clamp, increase_log_steps,
+                 rescale, disabled, log_on_batch_idx, log_first_step,
+                 log_images_kwargs, log_all_val)
+
+    def log_img(self, pl_module, batch, batch_idx, split="train"):
+        check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
+        if self.log_all_val and split == "val":
+            should_log = True
+            check_idx += 1
+        else:
+            should_log = self.check_frequency(check_idx)
+        if (should_log and  (check_idx % self.batch_freq == 0) and
+                hasattr(pl_module, "log_images") and
+                callable(pl_module.log_images) and
+                self.max_images > 0) or split == "val":
+            logger = type(pl_module.logger)
+
+            is_train = pl_module.training
+            if is_train:
+                pl_module.eval()
+            #sample logged images
+            with torch.no_grad():
+                images = pl_module.log_images(batch, split=split, **self.log_images_kwargs)
+
+            #logs every modality
+            for i in range(len(pl_module.modalities)):
+                modality = pl_module.modalities[i]
+                split_m = split+f"_{modality}"
+                images_m = images[modality]
+                for k in images_m:
+                    N = min(images_m[k].shape[0], self.max_images)
+                    images_m[k] = images_m[k][:N].clone()
+                    if isinstance(images_m[k], torch.Tensor):
+                        images_m[k] = images_m[k].detach().cpu()
+                        if self.clamp:
+                            images_m[k] = torch.clamp(images_m[k], -1., 1.)
+                    if modality == "optical_flow":
+                        print("LOGGING OPTICAL FLOW")
+                        print("SIZE MIN MAX MEAN IMAGE LOGGED OPTICAL FLOW : ", images_m[k].size(), images_m[k][:,2,:,:].min(), images_m[k][:,2,:,:].max(), images_m[k][:,2,:,:].mean())
+                        images_m[k] = (flow_to_color(images_m[k][:,:2,:,:]) / 255)
+
+                self.log_local(pl_module.logger.save_dir, split_m, images_m,
+                            pl_module.global_step, pl_module.current_epoch, batch_idx)
+
+                logger_log_images = self.logger_log_images.get(logger, lambda *args, **kwargs: None)
+                logger_log_images(pl_module, images_m, pl_module.global_step, split_m)
+
+            if is_train:
+                pl_module.train()
 
 
 class CUDACallback(Callback):
