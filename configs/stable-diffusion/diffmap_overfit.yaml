@@ -77,7 +77,7 @@ data:
     num_workers: 4
     num_val_workers: 0 # Avoid a weird val dataloader issue
     train: #params train dataset
-      target: ldm.data.llff.LLFFnfpDataset
+      target: ldm.data.llff.LLFFDiffmapDataset
       params:
         root_dir: datasets/llff
         scenes:  #scenes used
@@ -93,7 +93,7 @@ data:
           params:
             size: 512
     validation: #params val dataset
-      target: ldm.data.llff.LLFFnfpDataset
+      target: ldm.data.llff.LLFFDiffmapDataset
       params:
         root_dir: datasets/llff
         split: val
@@ -104,15 +104,10 @@ data:
         - target: torchvision.transforms.Resize
           params:
             size: 512 #val img resolution
+            interpolation: 3
         - target: torchvision.transforms.CenterCrop
           params:
             size: 512
-        #     interpolation: 3
-        # - target: torchvision.transforms.RandomCrop
-        #   params:
-        #     size: 64 #val random cropping size
-        # - target: torchvision.transforms.RandomHorizontalFlip
-
 
 lightning:
   find_unused_parameters: false

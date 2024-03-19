@@ -15,6 +15,8 @@ import csv
 import cv2
 import random
 import json
+from torchvision.transforms import functional as FT
+
 
 # Some hacky things to make experimentation easier
 def make_transform_multi_folder_data(paths, caption_files=None, **kwargs):
@@ -98,6 +100,22 @@ def make_tranforms(image_transforms):
                                 transforms.Lambda(lambda x: rearrange(x * 2. - 1., 'c h w -> h w c'))])
     image_transforms = transforms.Compose(image_transforms)
     return image_transforms
+
+class ResizeFlow:
+    def __init__(self, size):
+        self.size = size
+
+    def __call__(self, flow):
+        flow_resized = FT.resize(flow, self.size, interpolation=transforms.InterpolationMode.BILINEAR)
+        
+        # Adjust flow vectors (scales them according to the resize ratio)
+        height_ratio = flow_resized.size(1) / flow.size(1)
+        width_ratio = flow_resized.size(2) / flow.size(2)
+        flow_resized[0, :, :] *= width_ratio
+        flow_resized[1, :, :] *= height_ratio
+
+        return flow_resized
+
 
 
 def make_multi_folder_data(paths, caption_files=None, **kwargs):
@@ -371,7 +389,7 @@ class NfpImageDataset(Dataset):
 
         #defines val split and current dataset according to split
         self.split = split
-        n_val_samples = 6 # number of samples for val
+        n_val_samples = 0 # number of samples for val
         self.paths = sorted(list(self.root_dir.rglob(f"*.{ext}")))
         val_idx = np.linspace(0,len(self.paths)-1, n_val_samples, dtype=np.uint) #indices of val samples
         sample_idx = np.setdiff1d(np.arange(len(self.paths)), val_idx) if self.split=="train" else val_idx
