@@ -529,7 +529,7 @@ class LatentDiffusion(DDPM):
         except:
             self.num_downs = 0
         if not scale_by_std:
-            self.scale_factor = scale_factor
+            self.scale_factor = scale_factor #to normalize the variance in latent space
         else:
             self.register_buffer('scale_factor', torch.tensor(scale_factor))
         self.instantiate_first_stage(first_stage_config)
@@ -547,23 +547,6 @@ class LatentDiffusion(DDPM):
         self.cond_ids = torch.full(size=(self.num_timesteps,), fill_value=self.num_timesteps - 1, dtype=torch.long)
         ids = torch.round(torch.linspace(0, self.num_timesteps - 1, self.num_timesteps_cond)).long()
         self.cond_ids[:self.num_timesteps_cond] = ids
-
-    @rank_zero_only
-    @torch.no_grad()
-    def on_train_batch_start(self, batch, batch_idx, dataloader_idx):
-        # only for very first batch
-        if self.scale_by_std and self.current_epoch == 0 and self.global_step == 0 and batch_idx == 0 and not self.restarted_from_ckpt:
-            assert self.scale_factor == 1., 'rather not use custom rescaling and std-rescaling simultaneously'
-            # set rescale weight to 1./std of encodings
-            print("### USING STD-RESCALING ###")
-            x = super().get_input(batch, self.first_stage_key)
-            x = x.to(self.device)
-            encoder_posterior = self.encode_first_stage(x)
-            z = self.get_first_stage_encoding(encoder_posterior).detach()
-            del self.scale_factor
-            self.register_buffer('scale_factor', 1. / z.flatten().std())
-            print(f"setting self.scale_factor to {self.scale_factor}")
-            print("### USING STD-RESCALING ###")
 
     def register_schedule(self,
                           given_betas=None, beta_schedule="linear", timesteps=1000,
@@ -2056,9 +2039,23 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
 
     Simultaneous diffusion of flow, depths and next frame
     """
-    def __init__(self, *args, modalities=['nfp'],**kwargs):
+    def __init__(self, *args, modalities=['nfp'], first_stage_flow_config=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.modalities = modalities
+
+        print(first_stage_flow_config)
+        print('')
+        print('')
+        print('')
+        if first_stage_flow_config is not None:
+            model = instantiate_from_config(first_stage_flow_config)
+            self.first_stage_model_flow = model.eval()  #encodeur-decoder VAE
+            self.first_stage_model_flow.train = disabled_train
+            for param in self.first_stage_model_flow.parameters():
+                param.requires_grad = False
+
+        
+        # assert False    
 
 
     # def __init__(self, #derived from LatentInpaintDiffusion
@@ -2108,8 +2105,14 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
             if bs is not None:
                 x = x[:bs]
             x = x.to(self.device)
-            encoder_posterior = self.encode_first_stage(x)  #encode image target clean, latent clean encodé E(x_0)
-            z = self.get_first_stage_encoding(encoder_posterior).detach() #sample espace latent VAE (dans ce cas, juste encoder_posterior scalé)
+            if modality != "optical_flow":
+                encoder_posterior = self.encode_first_stage(x)  #encode image target clean, latent clean encodé E(x_0)
+                z = self.get_first_stage_encoding(encoder_posterior).detach() #sample espace latent VAE (dans ce cas, juste encoder_posterior scalé)
+            else:
+                # TODO faire proprement
+                encoder_posterior = self.first_stage_model_flow.encode(x)
+                z = self.scale_factor * encoder_posterior.sample()
+
             x_list.append(x)
             z_list.append(z)
         
@@ -2159,7 +2162,11 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
         if return_first_stage_outputs:
             x_rec_list = list()
             for k in range(len(self.modalities)):
-                x_rec_list.append(self.decode_first_stage(z[:, k*4:(k+1)*4, ...]))
+                if self.modalities[k] != "optical_flow":
+                    x_rec_list.append(self.decode_first_stage(z[:, k*4:(k+1)*4, ...]))
+                else:
+                    x_rec_list.append(self.first_stage_model_flow.decode((1/self.scale_factor) * z[:, k*4:(k+1)*4, ...])) # TODO faire proprement
+
             xrec = torch.cat(x_rec_list, dim=1)
             out.extend([x, xrec])
         if return_x:
@@ -2167,6 +2174,22 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
         if return_original_cond:
             out.append(xc)
         return out
+
+    def _get_denoise_row_from_list(self, samples, desc='', force_no_decoder_quantization=False, modality=None):
+        denoise_row = []
+        for zd in tqdm(samples, desc=desc):
+            if modality != "optical_flow":
+                denoise_row.append(self.decode_first_stage(zd.to(self.device),
+                                                            force_not_quantize=force_no_decoder_quantization))
+            else:
+                denoise_row.append(self.first_stage_model_flow.decode((1/self.scale_factor) * zd.to(self.device))) #TODO faire proprement
+
+        n_imgs_per_row = len(denoise_row)
+        denoise_row = torch.stack(denoise_row)  # n_log_step, n_row, C, H, W
+        denoise_grid = rearrange(denoise_row, 'n b c h w -> b n c h w')
+        denoise_grid = rearrange(denoise_grid, 'b n c h w -> (b n) c h w')
+        denoise_grid = make_grid(denoise_grid, nrow=n_imgs_per_row)
+        return denoise_grid
             
 
     @torch.no_grad()
@@ -2191,7 +2214,7 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
         N = min(x.shape[0], N)
         n_row = min(x.shape[0], n_row)
         
-         #gets conditioning image
+        #gets conditioning image
         if self.model.conditioning_key is not None:
             if hasattr(self.cond_stage_model, "decode"):
                 xc = self.cond_stage_model.decode(c)
@@ -2265,7 +2288,10 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
                         t = t.to(self.device).long()
                         noise = torch.randn_like(z_start)
                         z_noisy = self.q_sample(x_start=z_start, t=t, noise=noise)
-                        diffusion_row.append(self.decode_first_stage(z_noisy))
+                        if modality != "optical_flow":
+                            diffusion_row.append(self.decode_first_stage(z_noisy))
+                        else:
+                            diffusion_row.append(self.first_stage_model_flow.decode((1/self.scale_factor) * z_noisy)) # TODO faire proprement
 
                 diffusion_row = torch.stack(diffusion_row)  # n_log_step, n_row, C, H, W
                 diffusion_grid = rearrange(diffusion_row, 'n b c h w -> b n c h w')
@@ -2276,10 +2302,14 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
             
             if sample: #sampling of the conditional diffusion model with DDIM for accelerated inference without logging intermediates
                 samples_m = samples[:, k*4:(k+1)*4,...]
-                x_samples = self.decode_first_stage(samples_m) #decodes generated samples to image space
+                if modality != "optical_flow":
+                    x_samples = self.decode_first_stage(samples_m) #decodes generated samples to image space
+                else:
+                    x_samples = self.first_stage_model_flow.decode((1/self.scale_factor) * samples_m) #decodes generated samples to image space
+
                 log[modality]["samples"] = x_samples
                 if plot_denoise_rows:
-                    denoise_grid = self._get_denoise_row_from_list(z_denoise_row)
+                    denoise_grid = self._get_denoise_row_from_list(z_denoise_row, modality=modality) #a remplacer avec flow
                     log[modality]["denoise_row"] = denoise_grid
 
                 if quantize_denoised and not isinstance(self.first_stage_model, AutoencoderKL) and not isinstance(
@@ -2298,7 +2328,10 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
 
             if unconditional_guidance_scale > 1.0: #sampling with classifier free guidance
                 samples_cfg_m = samples_cfg[: , k*4:(k+1)*4, ...]
-                x_samples_cfg = self.decode_first_stage(samples_cfg_m)
+                if modality != "optical_flow":
+                    x_samples_cfg = self.decode_first_stage(samples_cfg_m)
+                else:
+                    x_samples_cfg = self.first_stage_model_flow.decode((1/self.scale_factor) * samples_cfg_m)
                 log[modality][f"samples_cfg_scale_{unconditional_guidance_scale:.2f}"] = x_samples_cfg
 
             if inpaint:
@@ -2314,7 +2347,7 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
 
             if plot_progressive_rows:
                 progressives_m = [s[:, k*4:(k+1)*4, ...] for s in progressives]
-                prog_row = self._get_denoise_row_from_list(progressives_m, desc="Progressive Generation")
+                prog_row = self._get_denoise_row_from_list(progressives_m, desc="Progressive Generation", modality=modality)
                 log[modality][f"progressive_row"] = prog_row
 
         if return_keys:
@@ -2373,6 +2406,7 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
         loss_dict.update({f'{prefix}/loss': loss})
     
         return loss, loss_dict
+    
     
     def configure_optimizers(self):
         lr = self.learning_rate
