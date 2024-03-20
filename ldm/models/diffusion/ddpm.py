@@ -608,6 +608,7 @@ class LatentDiffusion(DDPM):
         return self.scale_factor * z
 
     def get_learned_conditioning(self, c):
+        print("type(C) GET_LEARNED_CONDITIONING : ", type(c))
         if self.cond_stage_forward is None:
             if hasattr(self.cond_stage_model, 'encode') and callable(self.cond_stage_model.encode):
                 c = self.cond_stage_model.encode(c)
@@ -711,7 +712,7 @@ class LatentDiffusion(DDPM):
 
     @torch.no_grad()
     def get_input(self, batch, k, return_first_stage_outputs=False, force_c_encode=False,
-                  cond_key=None, return_original_cond=False, bs=None, return_x=False):
+                  cond_key=None, return_original_cond=False , bs=None, return_x=False):
         '''
         Returns the inputs and outputs required for a diffusion sampling process and to supervise the model.
         Inputs:
@@ -762,6 +763,11 @@ class LatentDiffusion(DDPM):
                 ckey = __conditioning_keys__[self.model.conditioning_key]
                 c = {ckey: c, 'pos_x': pos_x, 'pos_y': pos_y}
 
+            if self.model.conditioning_key == "hybrid":
+                xc = xc.to(self.device)
+                encoder_posterior_c = self.encode_first_stage(xc)  #encode image contexte, latent
+                zc = self.get_first_stage_encoding(encoder_posterior_c).detach()
+                c = {'c_concat':[zc], 'c_crossattn':[c]} #latent encoding and CLIP encoding for hybrid conditioning
         else: #no conditioning in this case
             c = None
             xc = None
@@ -916,7 +922,7 @@ class LatentDiffusion(DDPM):
             pass
         else:
             if not isinstance(cond, list):
-                cond = [cond]
+                cond = [cond]            
             key = 'c_concat' if self.model.conditioning_key == 'concat' else 'c_crossattn'
             cond = {key: cond}
 
@@ -1005,7 +1011,6 @@ class LatentDiffusion(DDPM):
             x_recon = fold(o) / normalization
 
         else:
-            # print('apply_model, x_noisy : ', x_noisy is None)
             x_recon = self.model(x_noisy, t, **cond)  #applies the U-Net, DiffusionWrapper
 
         if isinstance(x_recon, tuple) and not return_ids:
@@ -1314,6 +1319,8 @@ class LatentDiffusion(DDPM):
                                            force_c_encode=True,
                                            return_original_cond=True,
                                            bs=N)
+        
+        
         N = min(x.shape[0], N)
         n_row = min(x.shape[0], n_row)
         log["inputs"] = x #target image x_0
@@ -1321,7 +1328,10 @@ class LatentDiffusion(DDPM):
         #gets conditioning image
         if self.model.conditioning_key is not None:
             if hasattr(self.cond_stage_model, "decode"):
-                xc = self.cond_stage_model.decode(c)
+                if self.model.conditioning_key == "hybrid":
+                    xc = self.cond_stage_model.decode(c['c_crossattn'][0])
+                else:
+                    xc = self.cond_stage_model.decode(c)
                 log["conditioning"] = xc
             elif self.cond_stage_key in ["caption", "txt"]:
                 xc = log_txt_as_img((x.shape[2], x.shape[3]), batch[self.cond_stage_key], size=x.shape[2]//25)
@@ -1491,9 +1501,6 @@ class DiffusionWrapper(pl.LightningModule):
             cc = torch.cat(c_crossattn, 1)
             out = self.diffusion_model(x, t, context=cc)
         elif self.conditioning_key == 'hybrid':
-            # print("forward DiffusionWrapper, x : ", x is None)
-            # print('')
-            # print("forward DiffusionWrapper, x : ", c_concat is None)
             xc = torch.cat([x] + c_concat, dim=1)
             cc = torch.cat(c_crossattn, 1)
             out = self.diffusion_model(xc, t, context=cc)
@@ -2043,10 +2050,6 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
         super().__init__(*args, **kwargs)
         self.modalities = modalities
 
-        print(first_stage_flow_config)
-        print('')
-        print('')
-        print('')
         if first_stage_flow_config is not None:
             model = instantiate_from_config(first_stage_flow_config)
             self.first_stage_model_flow = model.eval()  #encodeur-decoder VAE
@@ -2149,6 +2152,17 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
                 pos_x, pos_y = self.compute_latent_shifts(batch)
                 ckey = __conditioning_keys__[self.model.conditioning_key]
                 c = {ckey: c, 'pos_x': pos_x, 'pos_y': pos_y}
+            
+            if self.model.conditioning_key == "hybrid":
+                xc = xc.to(self.device)
+                if self.cond_stage_key != "optical_flow":
+                    encoder_posterior_c = self.encode_first_stage(xc)  #encode image contexte, latent
+                    zc = self.get_first_stage_encoding(encoder_posterior_c).detach()
+                else:
+                    # TODO faire proprement
+                    encoder_posterior_c = self.first_stage_model_flow.encode(xc)
+                    zc = self.scale_factor * encoder_posterior.sample()
+                c = {'c_concat':[zc], 'c_crossattn':[c]} #latent encoding and CLIP encoding for hybrid conditioning
 
         else: #no conditioning in this case
             c = None
@@ -2210,14 +2224,16 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
                                            force_c_encode=True,
                                            return_original_cond=True,
                                            bs=N)
-
         N = min(x.shape[0], N)
         n_row = min(x.shape[0], n_row)
         
         #gets conditioning image
         if self.model.conditioning_key is not None:
             if hasattr(self.cond_stage_model, "decode"):
-                xc = self.cond_stage_model.decode(c)
+                if self.model.conditioning_key == "hybrid":
+                    xc = self.cond_stage_model.decode(c['c_crossattn'][0])
+                else:
+                    xc = self.cond_stage_model.decode(c)
                 log["conditioning"] = xc
             elif self.cond_stage_key in ["caption", "txt"]:
                 xc = log_txt_as_img((x.shape[2], x.shape[3]), batch[self.cond_stage_key], size=x.shape[2]//25)
@@ -2239,7 +2255,10 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
 
         #sampling with classifier free guidance
         if unconditional_guidance_scale > 1.0:
+            print("TYPE UNCONDITIONAL GUIDANCE LABEL : ", type(unconditional_guidance_label))
             uc = self.get_unconditional_conditioning(N, unconditional_guidance_label)
+            print("UC LOG IMAGE : ", type(uc), uc.size())
+            # assert False
             # uc = torch.zeros_like(c)
             with ema_scope("Sampling with classifier-free guidance"):
                 samples_cfg, _ = self.sample_log(cond=c, batch_size=N, ddim=use_ddim,
@@ -2361,6 +2380,8 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
         noise = default(noise, lambda: torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
         model_output = self.apply_model(x_noisy, t, cond)
+        #forward(self, x, t, c_concat: list = None, c_crossattn: list = None, c_adm=None)
+
 
         loss_dict = {}
         prefix = 'train' if self.training else 'val'

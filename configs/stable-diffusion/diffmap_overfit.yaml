@@ -12,7 +12,7 @@ model:
     image_size: 64 #2D resolution in the latent space, also controls sampling resolution (x8)
     channels: 8 #number of channels in latent space
     cond_stage_trainable: false   # Note: different from the one we trained before
-    conditioning_key: crossattn
+    conditioning_key: hybrid  #defines the type of conditioning ie (crossattn, concat, hybrid)
     monitor: val/loss_simple_ema
     scale_factor: 0.18215
     unet_trainable: conv_io_attn  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn)
@@ -33,7 +33,7 @@ model:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
         image_size: 32 # unused
-        in_channels: 8 #number of input channels U-Net, should be multiple of 4 (original size)
+        in_channels: 12 #number of input channels U-Net, should be multiple of 4 (original size)
         out_channels: 8 #number of output channels U-Net, should be multiple of 4 (original size)
         model_channels: 320
         attention_resolutions: [ 4, 2, 1 ]
