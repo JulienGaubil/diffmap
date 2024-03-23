@@ -608,7 +608,6 @@ class LatentDiffusion(DDPM):
         return self.scale_factor * z
 
     def get_learned_conditioning(self, c):
-        print("type(C) GET_LEARNED_CONDITIONING : ", type(c))
         if self.cond_stage_forward is None:
             if hasattr(self.cond_stage_model, 'encode') and callable(self.cond_stage_model.encode):
                 c = self.cond_stage_model.encode(c)
@@ -2253,12 +2252,22 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
                                                             ddim_steps=ddim_steps,eta=ddim_eta) #samples generative process in latent space
                     # samples, z_denoise_row = self.sample(cond=c, batch_size=N, return_intermediates=True)
 
-        #sampling with classifier free guidance
-        if unconditional_guidance_scale > 1.0:
-            print("TYPE UNCONDITIONAL GUIDANCE LABEL : ", type(unconditional_guidance_label))
+        #sampling with classifier free guidance, not implemented for hybrid
+        if unconditional_guidance_scale > 1.0 and self.model.conditioning_key != "hybrid":
             uc = self.get_unconditional_conditioning(N, unconditional_guidance_label)
-            print("UC LOG IMAGE : ", type(uc), uc.size())
-            # assert False
+            # if self.model.conditioning_key == "hybrid":
+            #     x_uc =  self.cond_stage_model.decode(uc).to(self.device)
+            #     if self.cond_stage_key != "optical_flow":
+            #         encoder_posterior_uc = self.encode_first_stage(x_uc)  #encode image contexte, latent
+            #         z_uc = self.get_first_stage_encoding(encoder_posterior_uc).detach()
+            #     else:
+            #         # TODO faire proprement
+            #         encoder_posterior_uc = self.first_stage_model_flow.encode(x_uc)
+            #         z_uc = self.scale_factor * encoder_posterior_uc.sample()
+                
+            #     uc = {'c_concat': [z_uc],
+            #           'c_crossattn': [uc],
+            #     }
             # uc = torch.zeros_like(c)
             with ema_scope("Sampling with classifier-free guidance"):
                 samples_cfg, _ = self.sample_log(cond=c, batch_size=N, ddim=use_ddim,
@@ -2345,7 +2354,7 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
                     # x_samples = self.decode_first_stage(samples.to(self.device))
                     # log["samples_x0_quantized"] = x_samples
 
-            if unconditional_guidance_scale > 1.0: #sampling with classifier free guidance
+            if unconditional_guidance_scale > 1.0 and self.model.conditioning_key != "hybrid": #sampling with classifier free guidance
                 samples_cfg_m = samples_cfg[: , k*4:(k+1)*4, ...]
                 if modality != "optical_flow":
                     x_samples_cfg = self.decode_first_stage(samples_cfg_m)
