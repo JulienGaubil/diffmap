@@ -19,6 +19,7 @@ model:
     modalities:
     - trgt
     - optical_flow
+    ckpt_path: null
 
     scheduler_config: # 1000 warmup steps
       target: ldm.lr_scheduler.LambdaLinearScheduler
