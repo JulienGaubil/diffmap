@@ -19,6 +19,7 @@ model:
     modalities:
     - trgt
     - optical_flow
+    ckpt_path: null
 
     scheduler_config: # 1000 warmup steps
       target: ldm.lr_scheduler.LambdaLinearScheduler
@@ -77,7 +78,7 @@ model:
       target: ldm.models.autoencoder.AutoencoderKL
       params:
         image_key: optical_flow #key of the target signal in the dataset samples dict
-        ckpt_path: "/home/jgaubil/projects/diffmap/codes/stable-diffmap/logs/auto_encoder/test_load/checkpoints/last.ckpt"
+        ckpt_path: "/home/jgaubil/projects/diffmap/codes/stable-diffmap/logs/auto_encoder/auto_encoder_kl_f8_flow_lowres/checkpoints/last.ckpt"
         monitor: val/rec_loss
         embed_dim: 4
         lossconfig:

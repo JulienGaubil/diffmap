@@ -851,6 +851,22 @@ if __name__ == "__main__":
                     scale = 1 if copy_weights else 1e-8 #copies exactly weights if copy initialization
                     old_state[k] = modify_weights(old_state[k], scale=scale, n=C_out_new//C_out_old, dim=0, copy_weights=copy_weights)
 
+            #if we load SD weights and still want to override with existing checkpoints
+            if config.model.params.ckpt_path is not None:
+                rank_zero_print(f"Attempting to load state from {config.model.params.ckpt_path}")
+                old_state = torch.load(config.model.params.ckpt_path, map_location="cpu")
+                if "state_dict" in old_state:
+                    rank_zero_print(f"Found nested key 'state_dict' in checkpoint, loading this instead")
+                    old_state = old_state["state_dict"]
+                #loads checkpoint weights
+                m, u = model.load_state_dict(old_state, strict=False)
+                if len(m) > 0:
+                    rank_zero_print("missing keys:")
+                    rank_zero_print(m)
+                if len(u) > 0:
+                    rank_zero_print("unexpected keys:")
+                    rank_zero_print(u)
+
             #loads checkpoint weights
             m, u = model.load_state_dict(old_state, strict=False)
             if len(m) > 0:
