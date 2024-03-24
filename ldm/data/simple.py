@@ -107,13 +107,6 @@ class ResizeFlow:
 
     def __call__(self, flow):
         flow_resized = FT.resize(flow, self.size, interpolation=transforms.InterpolationMode.BILINEAR)
-        
-        # Adjust flow vectors (scales them according to the resize ratio)
-        height_ratio = flow_resized.size(1) / flow.size(1)
-        width_ratio = flow_resized.size(2) / flow.size(2)
-        flow_resized[0, :, :] *= width_ratio
-        flow_resized[1, :, :] *= height_ratio
-
         return flow_resized
 
 
