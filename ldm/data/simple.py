@@ -115,7 +115,7 @@ class ResizeDepth:
         self.size = size
 
     def __call__(self, depth):
-        depth_resized = FT.resize(depth[None], self.size, interpolation=transforms.InterpolationMode.NEAREST_EXACT)
+        depth_resized = FT.resize(depth[None], self.size, interpolation=transforms.InterpolationMode.NEAREST)
         return depth_resized.squeeze()
     
 class NormalizeDepth:

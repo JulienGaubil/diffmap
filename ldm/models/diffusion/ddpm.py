@@ -2060,10 +2060,6 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
         super().__init__(*args, **kwargs)
         self.modalities = modalities
 
-        print(first_stage_flow_config)
-        print('')
-        print('')
-        print('')
         if first_stage_flow_config is not None:
             model = instantiate_from_config(first_stage_flow_config)
             self.first_stage_model_flow = model.eval()  #encodeur-decoder VAE

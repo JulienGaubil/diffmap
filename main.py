@@ -484,6 +484,12 @@ class ImageLoggerDiffmap(ImageLogger):
                             images_m[k] = torch.clamp(images_m[k], -1., 1.)
                     if modality == "optical_flow":
                         images_m[k] = (flow_to_color(images_m[k][:,:2,:,:]) / 255)
+                    elif modality == "depth":
+                        depth_map = images_m[k].mean(1) #averages prediction across three channels
+                        depth_map = (depth_map + 1)/2 #brings back in [0,1]
+                        depth_rgb = torch.stack([depth_map]*3, dim=1)
+                        images_m[k] = depth_rgb
+
 
                 self.log_local(pl_module.logger.save_dir, split_m, images_m,
                             pl_module.global_step, pl_module.current_epoch, batch_idx)
