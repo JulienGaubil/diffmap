@@ -109,6 +109,27 @@ class ResizeFlow:
         flow_resized = FT.resize(flow, self.size, interpolation=transforms.InterpolationMode.BILINEAR)
 
         return flow_resized
+    
+class ResizeDepth:
+    def __init__(self, size):
+        self.size = size
+
+    def __call__(self, depth):
+        depth_resized = FT.resize(depth[None], self.size, interpolation=transforms.InterpolationMode.NEAREST_EXACT)
+        return depth_resized.squeeze()
+    
+class NormalizeDepth:
+    def __call__(self, depth):
+        try:
+            near = depth[depth > 0][:16_000_000].quantile(0.01)
+            far = depth.view(-1)[:16_000_000].quantile(0.99)
+        except Exception:
+            near = depth.min()
+            far = depth.max()
+
+        depth = 2*(depth - near) / (far - near) -1
+        depth = depth.clip(min=-1, max=1)
+        return depth
 
 
 

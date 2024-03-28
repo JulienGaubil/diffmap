@@ -1,5 +1,5 @@
 from torch.utils.data import Dataset
-from .simple import make_tranforms, ResizeFlow
+from .simple import make_tranforms, ResizeFlow, ResizeDepth, NormalizeDepth
 from pathlib import Path
 from PIL import Image
 import numpy as np
@@ -118,12 +118,18 @@ class LLFFDiffmapDataset(Dataset):
             self.scenes = [str(scene) for scene in scenes]
 
         self.prepare_pairs(n_val_samples_scene)
-        self.tform = make_tranforms(image_transforms)
 
+        #defines transforms
+        self.tform = make_tranforms(image_transforms)
+        self.tform_flow = self.initialize_flow_tform()
+        self.tform_depth = self.initialize_depth_tform()
+
+
+
+        #loads flow and depth - TODO do this properly
         assert len(self.scenes) == 1, "Multi scene LLFFDiffmapDataset not yet implemented"
-        self.flows_fwd = torch.load(os.path.join(root_dir, scenes[0], "flow_forward", "flows_forward.pt")) # (B,N,H,W,C), B=1
-        
-        self.tform_flow = self.initialize_flow_tform()        
+        self.flows_fwd = torch.load(os.path.join(root_dir, scenes[0], "flow_forward", "flows_forward.pt")) # (B,N,H,W,C), B=1, C=2
+        self.depths = torch.load(os.path.join(root_dir, scenes[0], "depths", "depths.pt")) # (B,N,H,W), B=1
 
 
     def initialize_flow_tform(self):
@@ -144,6 +150,26 @@ class LLFFDiffmapDataset(Dataset):
         ]
         flow_transforms = transforms.Compose(flow_transforms)
         return flow_transforms
+    
+    def initialize_depth_tform(self):
+        assert any([isinstance(t, transforms.Resize) for t in self.tform.transforms]), "Add a torchvision.transforms.Resize transformation!"
+        assert any([isinstance(t, transforms.CenterCrop) for t in self.tform.transforms]), "Add a torchvision.transforms.CenterCrop transformation!"
+
+        for t in self.tform.transforms:
+            if isinstance(t, transforms.Resize):
+                new_size = t.size
+            elif isinstance(t, transforms.CenterCrop):
+                crop_size = t.size
+
+        depth_transforms = [
+            # transforms.Lambda(lambda x: rearrange(x , 'h w c -> c h w')),
+            NormalizeDepth(),
+            ResizeDepth(new_size),
+            transforms.CenterCrop(crop_size),
+            # transforms.Lambda(lambda x: rearrange(x , 'c h w -> h w c')),            
+        ]
+        depth_transforms = transforms.Compose(depth_transforms)
+        return depth_transforms
 
     def prepare_pairs(self, n_val_samples_scene):
         '''
@@ -189,6 +215,7 @@ class LLFFDiffmapDataset(Dataset):
         data[self.image_key] = self._load_im(curr)
         data[self.cond_key] = self._load_im(prev)
         data['optical_flow'] = self._load_flow(index)
+        data['depth'] = self._load_depth(index)
         return data
 
     def _load_im(self, filename):
@@ -201,6 +228,14 @@ class LLFFDiffmapDataset(Dataset):
         #adds a third channel to be processed like an image
         flow_transformed = torch.cat([flow_transformed, torch.zeros_like(flow_transformed[:,:,0,None])], dim=2)
         return flow_transformed
+    
+    def _load_depth(self, index):
+        depth = self.depths[0,index,:,:]
+        depth_transformed = self.tform_depth(depth) #(H,W)
+        #extends to three channels to be processed like an image
+        depth_transformed = torch.stack([depth_transformed]*3, dim=2) #(H,W,C)
+        return depth_transformed
+
 
 
 
