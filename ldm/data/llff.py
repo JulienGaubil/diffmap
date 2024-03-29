@@ -188,7 +188,7 @@ class LLFFDiffmapDataset(Dataset):
             val_pairs_idx = np.stack([val_idx, val_idx+1], axis=1) #val pairs 
 
             if self.split == 'val':
-                pairs_idx = val_pairs_idx
+                self.pairs_idx = val_pairs_idx
             else:
                 val_pairs_idx = np.stack([val_idx, val_idx+1], axis=1) #val pairs indices, (N,2)
                 #indices of pairs in val_pairs_idx that contain any image from a val pair, (N,)
@@ -200,22 +200,27 @@ class LLFFDiffmapDataset(Dataset):
                     ),
                 axis=0)
                 #excludes training pairs with val images
-                pairs_idx = all_pairs_idx[~exc_idx]
+                self.pairs_idx = all_pairs_idx[~exc_idx]
 
-            self.pairs += [(paths[j[0]], paths[j[1]]) for j in pairs_idx]
+            self.pairs += [(paths[j[0]], paths[j[1]]) for j in self.pairs_idx]
 
 
     def __len__(self):
         return len(self.pairs)
 
     def __getitem__(self, index):
-        prev = self.pairs[index][0]
-        curr = self.pairs[index][1]
+        #paths and indices
+        prev_im_path = self.pairs[index][0]
+        curr_im_path = self.pairs[index][1]
+        prev_idx, curr_idx = self.pairs_idx[index]
+        
+        #loads target, context frames, flow and depths
         data = {}
-        data[self.image_key] = self._load_im(curr)
-        data[self.cond_key] = self._load_im(prev)
-        data['optical_flow'] = self._load_flow(index)
-        data['depth'] = self._load_depth(index)
+        data[self.image_key] = self._load_im(curr_im_path)
+        data[self.cond_key] = self._load_im(prev_im_path)
+        data['optical_flow'] = self._load_flow(prev_idx) #flow forward ctxt -> trgt
+        data['depth_trgt'] = self._load_depth(curr_idx)
+        data['depth_ctxt'] = self._load_depth(prev_idx)
         return data
 
     def _load_im(self, filename):

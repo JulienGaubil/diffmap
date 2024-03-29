@@ -10,7 +10,7 @@ model:
     first_stage_key: "trgt" #key in batch for the noised signal
     cond_stage_key: "ctxt" #key in batch for the clean conditioning signal
     image_size: 64 #2D resolution in the latent space, also controls sampling resolution (x8)
-    channels: 12 #number of channels in latent space
+    channels: 16 #number of channels in latent space
     cond_stage_trainable: false   # Note: different from the one we trained before
     conditioning_key: crossattn
     monitor: val/loss_simple_ema
@@ -19,7 +19,8 @@ model:
     modalities:
     - trgt
     - optical_flow
-    - depth
+    - depth_trgt
+    - depth_ctxt
     ckpt_path: null
 
     scheduler_config: # 1000 warmup steps
@@ -35,8 +36,8 @@ model:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
         image_size: 32 # unused
-        in_channels: 12 #number of input channels U-Net, should be multiple of 4 (original size)
-        out_channels: 12 #number of output channels U-Net, should be multiple of 4 (original size)
+        in_channels: 16 #number of input channels U-Net, should be multiple of 4 (original size)
+        out_channels: 16 #number of output channels U-Net, should be multiple of 4 (original size)
         model_channels: 320
         attention_resolutions: [ 4, 2, 1 ]
         num_res_blocks: 2
