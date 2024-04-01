@@ -121,7 +121,7 @@ class LLFFDiffmapDataset(Dataset):
 
         #defines transforms
         self.tform = make_tranforms(image_transforms)
-        self.tform_flow = self.initialize_flow_tform()
+        self.tform_flow, self.tform_flow_mask = self.initialize_flow_tform()
         self.tform_depth = self.initialize_depth_tform()
 
 
@@ -129,6 +129,9 @@ class LLFFDiffmapDataset(Dataset):
         #loads flow and depth - TODO do this properly
         assert len(self.scenes) == 1, "Multi scene LLFFDiffmapDataset not yet implemented"
         self.flows_fwd = torch.load(os.path.join(root_dir, scenes[0], "flow_forward", "flows_forward.pt")) # (B,N,H,W,C), B=1, C=2
+        self.flows_bwd = torch.load(os.path.join(root_dir, scenes[0], "flow_backward", "flows_backward.pt")) # (B,N,H,W,C), B=1, C=2
+        self.flows_fwd_mask = torch.load(os.path.join(root_dir, scenes[0], "flow_forward", "flows_forward_mask.pt")) # (B,N,H,W), B=1
+        self.flows_bwd_mask = torch.load(os.path.join(root_dir, scenes[0], "flow_backward", "flows_backward_mask.pt")) # (B,N,H,W), B=1
         self.depths = torch.load(os.path.join(root_dir, scenes[0], "depths", "depths.pt")) # (B,N,H,W), B=1
 
 
@@ -148,8 +151,13 @@ class LLFFDiffmapDataset(Dataset):
             transforms.CenterCrop(crop_size),
             transforms.Lambda(lambda x: rearrange(x , 'c h w -> h w c')),            
         ]
+        flow_mask_transforms = [
+            ResizeFlow(new_size),
+            transforms.CenterCrop(crop_size),
+        ]
         flow_transforms = transforms.Compose(flow_transforms)
-        return flow_transforms
+        flow_mask_transforms = transforms.Compose(flow_mask_transforms)
+        return flow_transforms, flow_mask_transforms
     
     def initialize_depth_tform(self):
         assert any([isinstance(t, transforms.Resize) for t in self.tform.transforms]), "Add a torchvision.transforms.Resize transformation!"
@@ -214,11 +222,22 @@ class LLFFDiffmapDataset(Dataset):
         curr_im_path = self.pairs[index][1]
         prev_idx, curr_idx = self.pairs_idx[index]
         
-        #loads target, context frames, flow and depths
+        # Load target, context frames
         data = {}
         data[self.image_key] = self._load_im(curr_im_path)
         data[self.cond_key] = self._load_im(prev_im_path)
-        data['optical_flow'] = self._load_flow(prev_idx) #flow forward ctxt -> trgt
+
+        # Load flow
+        flow_fwd, flow_fwd_mask = self._load_flow(self.flows_fwd, self.flows_fwd_mask, prev_idx) #flow forward ctxt -> trgt
+        flow_bwd, flow_bwd_mask = self._load_flow(self.flows_bwd, self.flows_bwd_mask, prev_idx) #flow forward trgt -> ctxt
+        data.update({
+            'optical_flow': flow_fwd,
+            'optical_flow_bwd': flow_bwd,
+            'optical_flow_mask': flow_fwd_mask,
+            'optical_flow_bwd_mask': flow_bwd_mask
+            }
+        )
+        # Load depth
         data['depth_trgt'] = self._load_depth(curr_idx)
         data['depth_ctxt'] = self._load_depth(prev_idx)
         return data
@@ -227,12 +246,14 @@ class LLFFDiffmapDataset(Dataset):
         im = Image.open(filename).convert("RGB")
         return self.tform(im)
     
-    def _load_flow(self, index):
-        flow = self.flows_fwd[0,index,:,:,:]
-        flow_transformed = self.tform_flow(flow) #(H,W,C)
-        #adds a third channel to be processed like an image
-        flow_transformed = torch.cat([flow_transformed, torch.zeros_like(flow_transformed[:,:,0,None])], dim=2)
-        return flow_transformed
+    def _load_flow(self, flows, flows_mask, index):
+        flow = flows[0,index,:,:,:]
+        flow_mask = flows_mask[0,index,:,:]
+        flow_transformed = self.tform_flow(flow) #(H,W,C=2)
+        flow_mask_transformed = self.tform_flow_mask(flow_mask[None]).squeeze(0) #(H,W)
+        #adds a third channel to process flow as an image
+        flow_transformed = torch.cat([flow_transformed, torch.zeros_like(flow_transformed[:,:,0,None])], dim=2) #(H,W,C=3)
+        return flow_transformed, flow_mask_transformed
     
     def _load_depth(self, index):
         depth = self.depths[0,index,:,:]

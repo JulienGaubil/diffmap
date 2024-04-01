@@ -12,10 +12,18 @@ from .extrinsics import ExtrinsicsCfg, get_extrinsics
 from .intrinsics import IntrinsicsCfg, get_intrinsics
 from .projection import sample_image_grid, unproject
 
+from .backbone.backbone import BackboneOutput
+
 
 @dataclass
 class ModelCfg:
     backbone: BackboneCfg
+    intrinsics: IntrinsicsCfg
+    extrinsics: ExtrinsicsCfg
+    use_correspondence_weights: bool
+
+@dataclass
+class FlowmapModelDiffCfg:
     intrinsics: IntrinsicsCfg
     extrinsics: ExtrinsicsCfg
     use_correspondence_weights: bool
@@ -108,3 +116,61 @@ class Model(nn.Module):
             batch.videos,
             output.depths,
         )
+    
+
+class FlowmapModelDiff(nn.Module):
+    def __init__(
+        self,
+        cfg: FlowmapModelDiffCfg,
+        num_frames: int | None = None,
+        image_shape: tuple[int, int] | None = None,
+    ) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.intrinsics = get_intrinsics(cfg.intrinsics)
+        self.extrinsics = get_extrinsics(cfg.extrinsics, num_frames)
+
+    def forward(
+        self,
+        batch: Batch,
+        flows: Flows,
+        depths: Float[Tensor, "batch pair height width"],
+        global_step: int,
+    ) -> ModelOutput:
+        device = batch.videos.device
+        _, _, _, h, w = batch.videos.shape
+
+        # Run the backbone, which provides depths and correspondence weights TODO replace hack
+        backbone_out = BackboneOutput(**{
+            "depths": depths,
+            "weights": torch.ones_like(depths[:,:-1,:,:])
+            }
+        )
+
+        # Allow the correspondence weights to be ignored as an ablation.
+        if not self.cfg.use_correspondence_weights:
+            backbone_out.weights = torch.ones_like(backbone_out.weights)
+
+        # Compute the intrinsics.
+        intrinsics = self.intrinsics.forward(batch, flows, backbone_out, global_step)
+
+        # Use the intrinsics to calculate camera-space surfaces (point clouds).
+        xy, _ = sample_image_grid((h, w), device=device)
+        surfaces = unproject(
+            xy,
+            backbone_out.depths,
+            rearrange(intrinsics, "b f i j -> b f () () i j"),
+        )
+
+        # Finally, compute the extrinsics.
+        extrinsics = self.extrinsics.forward(batch, flows, backbone_out, surfaces)
+        
+        return ModelOutput(
+            backbone_out.depths,
+            surfaces,
+            intrinsics,
+            extrinsics,
+            backbone_out.weights,
+        )
+        
+

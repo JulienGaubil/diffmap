@@ -28,6 +28,14 @@ from ldm.modules.diffusionmodules.util import make_beta_schedule, extract_into_t
 from ldm.models.diffusion.ddim import DDIMSampler
 from ldm.modules.attention import CrossAttention
 
+from jaxtyping import Float
+from torch import Tensor
+from ldm.modules.flowmap.model.model_wrapper_pretrain import FlowmapLossWrapper
+from ldm.modules.flowmap.config.common import get_typed_root_config_diffmap
+from ldm.modules.flowmap.config.pretrain import DiffmapCfg
+from ldm.modules.flowmap.loss import get_losses
+from ldm.modules.flowmap.model.model import FlowmapModelDiff
+
 
 __conditioning_keys__ = {'concat': 'c_concat',
                          'crossattn': 'c_crossattn',
@@ -1022,7 +1030,6 @@ class LatentDiffusion(DDPM):
             x_recon = fold(o) / normalization
 
         else:
-            # print('apply_model, x_noisy : ', x_noisy is None)
             x_recon = self.model(x_noisy, t, **cond)  #applies the U-Net, DiffusionWrapper
 
         if isinstance(x_recon, tuple) and not return_ids:
@@ -1051,7 +1058,7 @@ class LatentDiffusion(DDPM):
     def p_losses(self, x_start, cond, t, noise=None):
         noise = default(noise, lambda: torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
-        model_output = self.apply_model(x_noisy, t, cond)
+        model_output = self.apply_model(x_noisy, t, cond) #prediction of x_0 or noise from x_t depending on parameterization
 
         loss_dict = {}
         prefix = 'train' if self.training else 'val'
@@ -1508,9 +1515,6 @@ class DiffusionWrapper(pl.LightningModule):
             cc = torch.cat(c_crossattn, 1)
             out = self.diffusion_model(x, t, context=cc)
         elif self.conditioning_key == 'hybrid':
-            # print("forward DiffusionWrapper, x : ", x is None)
-            # print('')
-            # print("forward DiffusionWrapper, x : ", c_concat is None)
             xc = torch.cat([x] + c_concat, dim=1)
             cc = torch.cat(c_crossattn, 1)
             out = self.diffusion_model(xc, t, context=cc)
@@ -2056,7 +2060,7 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
 
     Simultaneous diffusion of flow, depths and next frame
     """
-    def __init__(self, *args, modalities=['nfp'], first_stage_flow_config=None, **kwargs):
+    def __init__(self,  *args, modalities=['nfp'], first_stage_flow_config=None, flowmap_loss_config=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.modalities = modalities
 
@@ -2067,39 +2071,67 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
             for param in self.first_stage_model_flow.parameters():
                 param.requires_grad = False
 
+        assert self.channels % len(self.modalities) == 0, "Number of channels should be a multiple of number of modalities"
+        self.channels_m = self.channels // len(self.modalities) #number of individual channels per modality
+
+        if flowmap_loss_config is not None:
+            self.flowmap_loss_wrapper = self.init_flowmap_loss(flowmap_loss_config)
+            
+    def init_flowmap_loss(self, cfg_dict):
+        cfg = get_typed_root_config_diffmap(cfg_dict, DiffmapCfg)
+        # Set up the model.
+        model = FlowmapModelDiff(cfg.model)
+        losses = get_losses(cfg.loss)
+        flowmap_loss_wrapper = FlowmapLossWrapper(
+            cfg.model_wrapper,
+            cfg.cropping,
+            cfg.flow,
+            model,
+            losses,
+        )
+        return flowmap_loss_wrapper    
         
-        # assert False    
+    def split_modalities(
+            self,
+            z: Float[Tensor, "_ 4*C _ _"],
+            C: int = None
+        ) -> dict[str, Float[Tensor, "_ C _ _"]]:
+        # Splits input tensor along every modality of chunk size C
+        C = default(C, self.channels_m)
+        return dict(zip(self.modalities, torch.split(z, C, dim=1)))
+    
+    def decode_first_stage_modality(
+            self,
+            z_m: Float[Tensor, "_ C _ _"],
+            modality: str,
+            # compute_grxads: bool = False,
+    ) -> Float[Tensor, "_ 3 _ _"]:
+        # Decodes individual modality
+        use_grad = torch.is_grad_enabled()
+        with torch.set_grad_enabled(use_grad):
+            first_stage_model = self.first_stage_model if modality != "optical_flow" else self.first_stage_model_flow
+            z_m = 1. / self.scale_factor * z_m
+            x_sample_m = first_stage_model.decode(z_m)
+            return x_sample_m
+    
+    def decode_first_stage_all(
+            self,
+            z: Float[Tensor, "_ C _ _"],
+            modalities: list[str] | None = None
+        ) -> dict[str, Float[Tensor, "_ 3 _ _"]]:
+        # Decodes input modalities
+        modalities = default(modalities, self.modalities)
+        z_split = self.split_modalities(z)
 
-
-    # def __init__(self, #derived from LatentInpaintDiffusion
-    #              finetune_keys=("model.diffusion_model.input_blocks.0.0.weight",
-    #                             "model_ema.diffusion_modelinput_blocks00weight"
-    #                             ),
-    #              concat_keys=("mask", "masked_image"),
-    #              masked_image_key="masked_image",
-    #              keep_finetune_dims=4,  # if model was trained without concat mode before and we would like to keep these channels
-    #              c_concat_log_start=None, # to log reconstruction of c_concat codes
-    #              c_concat_log_end=None,
-    #              *args, **kwargs
-    #              ):
-    #     ckpt_path = kwargs.pop("ckpt_path", None)
-    #     ignore_keys = kwargs.pop("ignore_keys", list())
-    #     super().__init__(*args, **kwargs)
-    #     self.masked_image_key = masked_image_key
-    #     assert self.masked_image_key in concat_keys
-    #     self.finetune_keys = finetune_keys
-    #     self.concat_keys = concat_keys
-    #     self.keep_dims = keep_finetune_dims
-    #     self.c_concat_log_start = c_concat_log_start
-    #     self.c_concat_log_end = c_concat_log_end
-    #     if exists(self.finetune_keys): assert exists(ckpt_path), 'can only finetune from a given checkpoint'
-    #     if exists(ckpt_path):
-    #         self.init_from_ckpt(ckpt_path, ignore_keys)
-
+        x_sample = dict()
+        for modality in modalities:
+            z_m = z_split[modality]
+            x_sample[modality] = self.decode_first_stage_modality(z_m, modality)
+        return x_sample
 
     @torch.no_grad()
     def get_input(self, batch, k, return_first_stage_outputs=False, force_c_encode=False,
-                    cond_key=None, return_original_cond=False, bs=None, return_x=False):
+                    cond_key=None, return_original_cond=False, bs=None, return_x=False, return_flows=False):
         '''
         Returns the inputs and outputs required for a diffusion sampling process and to supervise the model.
         Inputs:
@@ -2183,11 +2215,61 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
             xrec = torch.cat(x_rec_list, dim=1)
             out.extend([x, xrec])
         if return_x:
-            out.extend([x])
+            out.append(x)
+        if return_flows: #TODO properly handle modalities
+            flows = {"forward": batch['optical_flow'].to(self.device), "backward": batch['optical_flow_bwd'].to(self.device)}
+            flows_masks = {"forward": batch['optical_flow_mask'].to(self.device), "backward": batch['optical_flow_bwd_mask'].to(self.device)}
+            if bs is not None:
+                flows["forward"] = flows["forward"][:bs,:,:,:]
+                flows_masks = flows["backward"][:bs,:,:]                
+            out.extend([flows, flows_masks])
         if return_original_cond:
             out.append(xc)
         return out
 
+    def get_input_flowmap(
+            self,
+            x_recon_flowmap: Float[Tensor, "batch channels_latent height_latent width_latent"],
+            flows: dict[str, Float[Tensor, "batch channels height width"]],
+            flows_masks: dict[str, Float[Tensor, "batch height width"]]
+        ) -> tuple[dict[str, Tensor], dict[str, Tensor], Float[Tensor, "batch frame height width"]]:
+        # Prepare depth, should be (batch frame height width)
+        depths_recon = torch.stack([
+            x_recon_flowmap["depth_ctxt"].mean(1),
+            x_recon_flowmap["depth_trgt"].mean(1)
+            ],
+            dim=1
+        )
+        # Normalize the depth
+        near = depths_recon.min()
+        far = depths_recon.max()
+        depths_recon = (depths_recon - near) / (far - near)
+        depths_recon = depths_recon.clip(min=0, max=1)
+
+        # Prepare flow
+        # flows_recon = rearrange(x_recon_flowmap["optical_flow"][:, None, :2, :, :], 'b f xy w h -> b f w h xy') #estimated clean forward flow, TODO, should be (batch pair height width 2)
+        flows_fwd = rearrange(flows["forward"][:, None, :2, :, :], 'b f xy w h -> b f w h xy')  #gt clean forward flows, TODO, should be (batch pair height width 2)
+        flows_bwd = rearrange(flows["backward"][:, None, :2, :, :], 'b f xy w h -> b f w h xy')  #gt clean backward flows, TODO, should be (batch pair height width 2)
+        flows_mask_fwd = flows_masks["forward"][:, None, :, :] #gt clean forward flows consistency masks, TODO, should be (batch pair height width)
+        flows_mask_bwd = flows_masks["backward"][:, None, :, :] #gt clean backward flows consistency masks, TODO, should be (batch pair height width)
+        flows = {
+            "forward": flows_fwd,
+            "backward": flows_bwd,
+            "forward_mask": flows_mask_fwd,
+            "backward_mask": flows_mask_bwd,
+        }
+
+        # Prepare flowmap dummy batch TODO remove hack
+        N, _ ,_, H, W = flows_fwd.size()
+        dummy_flowmap_batch = {
+            "videos": torch.zeros((N, 2, 3, H, W), dtype=torch.float32, device=self.device),
+            "indices": torch.tensor([0,1], device=self.device).repeat(N, 2),
+            "scenes": [""],
+            "datasets": [""],
+        }
+
+        return dummy_flowmap_batch, flows, depths_recon
+    
     def _get_denoise_row_from_list(self, samples, desc='', force_no_decoder_quantization=False, modality=None):
         denoise_row = []
         for zd in tqdm(samples, desc=desc):
@@ -2370,53 +2452,85 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
                 return {modality:{key: log[key] for key in return_keys} for modality in self.modalities}
         return log
     
-    def p_losses(self, x_start, cond, t, noise=None):
-        noise = default(noise, lambda: torch.randn_like(x_start))
-        x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
-        model_output = self.apply_model(x_noisy, t, cond)
+    def shared_step(self, batch, **kwargs):
+        z, c, flows, flows_masks  = self.get_input(batch, self.first_stage_key, return_flows=True)
+        loss = self(z, c, flows, flows_masks)
+        return loss
 
-        loss_dict = {}
-        prefix = 'train' if self.training else 'val'
+    def forward(self, z, c, flows, flows_masks, *args, **kwargs):
+        t = torch.randint(0, self.num_timesteps, (z.shape[0],), device=self.device).long()
+        if self.model.conditioning_key is not None:
+            assert c is not None
+            if self.cond_stage_trainable:
+                c = self.get_learned_conditioning(c)
+            if self.shorten_cond_schedule:  # TODO: drop this option
+                tc = self.cond_ids[t].to(self.device)
+                c = self.q_sample(x_start=c, t=tc, noise=torch.randn_like(c.float()))
+        return self.p_losses(z, c, flows, flows_masks, t, *args, **kwargs)
 
+    def p_losses(self, z_start, cond, flows, flows_masks, t, noise=None):
+        # Prepares input for U-Net diffusion
+        noise = default(noise, lambda: torch.randn_like(z_start))
+        z_noisy = self.q_sample(x_start=z_start, t=t, noise=noise)
+
+        # Computes model output and predicts clean x_0
+        model_output = self.apply_model(z_noisy, t, cond) #prediction of x_0 or noise from x_t depending on the parameterization
         if self.parameterization == "x0":
-            target = x_start
+            target = z_start
+            z_recon = model_output
         elif self.parameterization == "eps":
             target = noise
+            z_recon = self.predict_start_from_noise(z_noisy, t=t, noise=model_output) #x_0 estimated from the noise estimated and x_t:=x
         else:
             raise NotImplementedError()
-        
+
+        # Prepares flowmap inputs
+        x_recon_flowmap = self.decode_first_stage_all(z_recon, modalities=["depth_trgt", "depth_ctxt", "optical_flow"])
+        dummy_flowmap_batch, flows, depths_recon = self.get_input_flowmap(x_recon_flowmap, flows, flows_masks)
+
+        #computes losses for every modality
+        loss_dict = {}
+        prefix = 'train' if self.training else 'val'        
         loss_simple, loss_gamma, loss, loss_vlb  = 0, 0, 0, 0
         logvar_t = self.logvar[t].to(self.device)
-
         if self.learn_logvar:
             loss_dict.update({'logvar': self.logvar.data.mean()})
-
         
         for k in range(len(self.modalities)):
             modality = self.modalities[k]
-            loss_simple_m = self.get_loss(model_output[:, k*4:(k+1)*4, ...], target[:, k*4:(k+1)*4, ...], mean=False).mean([1, 2, 3])
-            loss_simple += loss_simple_m
-            loss_dict.update({f'{prefix}_{modality}/loss_simple': loss_simple_m.clone().detach().mean()})
 
-            loss_gamma_m = loss_simple_m / torch.exp(logvar_t) + logvar_t
-            if self.learn_logvar:
-                loss_dict.update({f'{prefix}_{modality}/loss_gamma': loss_gamma_m.mean()})
-            loss_gamma += loss_gamma_m
+            if modality ==  "depth_ctxt": #flowmap loss
+                loss_flowmap = self.flowmap_loss_wrapper.training_step(dummy_flowmap_batch, flows, depths_recon)
+                loss_m = loss_flowmap
+                loss_dict.update({f'{prefix}_flowmap/loss': loss_flowmap})
+                loss += loss_m
+            elif modality == "depth_trgt":
+                pass #TODO remove hack and properly handle modalities
+            else: #diffusion losses
+                loss_simple_m = self.get_loss(model_output[:, k*4:(k+1)*4, ...], target[:, k*4:(k+1)*4, ...], mean=False).mean([1, 2, 3])
+                loss_simple += loss_simple_m
+                loss_dict.update({f'{prefix}_{modality}/loss_simple': loss_simple_m.clone().detach().mean()})
 
-            loss_vlb_m = self.get_loss(model_output[:, k*4:(k+1)*4, ...], target[:, k*4:(k+1)*4, ...], mean=False).mean(dim=(1, 2, 3))
-            loss_vlb_m = (self.lvlb_weights[t] * loss_vlb_m).mean()
-            loss_dict.update({f'{prefix}_{modality}/loss_vlb': loss_vlb_m})
-            loss_vlb += loss_vlb_m
+                loss_gamma_m = loss_simple_m / torch.exp(logvar_t) + logvar_t
+                if self.learn_logvar:
+                    loss_dict.update({f'{prefix}_{modality}/loss_gamma': loss_gamma_m.mean()})
+                loss_gamma += loss_gamma_m
 
-            loss_m = self.l_simple_weight * loss_gamma_m.mean() + (self.original_elbo_weight * loss_vlb_m)
-            loss_dict.update({f'{prefix}_{modality}/loss': loss_m})
-            loss += loss_m
-        
+                loss_vlb_m = self.get_loss(model_output[:, k*4:(k+1)*4, ...], target[:, k*4:(k+1)*4, ...], mean=False).mean(dim=(1, 2, 3))
+                loss_vlb_m = (self.lvlb_weights[t] * loss_vlb_m).mean()
+                loss_dict.update({f'{prefix}_{modality}/loss_vlb': loss_vlb_m})
+                loss_vlb += loss_vlb_m
+
+                loss_m = self.l_simple_weight * loss_gamma_m.mean() + (self.original_elbo_weight * loss_vlb_m)
+                loss_dict.update({f'{prefix}_{modality}/loss': loss_m})
+
+                loss += loss_m
+
         loss_dict.update({f'{prefix}/loss_simple': loss_simple.mean()})
         if self.learn_logvar:
             loss_dict.update({f'{prefix}/loss_gamma': loss_gamma.mean()})
         loss_dict.update({f'{prefix}/loss_vlb': loss_vlb})
-        loss_dict.update({f'{prefix}/loss': loss})
+        
     
         return loss, loss_dict
     

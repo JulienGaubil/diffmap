@@ -16,12 +16,21 @@ from ..misc.cropping import (
 )
 from ..misc.image_io import prep_image
 from ..visualization import Visualizer
-from .model import Model
+from .model import Model, FlowmapModelDiff
+
+from jaxtyping import Float
+from torch import Tensor
+import torch.nn.functional as F
+from einops import rearrange
 
 
 @dataclass
 class ModelWrapperPretrainCfg:
     lr: float
+    patch_size: int
+
+@dataclass
+class FlowmapLossWrapperCfg:
     patch_size: int
 
 
@@ -108,3 +117,76 @@ class ModelWrapperPretrain(LightningModule):
 
     def configure_optimizers(self) -> OptimizerLRScheduler:
         return optim.Adam(self.parameters(), lr=self.cfg.lr)
+
+
+
+class FlowmapLossWrapper(LightningModule):
+    def __init__(
+        self,
+        cfg: FlowmapLossWrapperCfg,
+        cfg_cropping: CroppingCfg,
+        cfg_flow: FlowPredictorCfg,
+        model: FlowmapModelDiff,
+        losses: list[Loss],
+    ) -> None:
+        super().__init__()
+        self.cfg = cfg
+        self.cfg_cropping = cfg_cropping
+        self.flow_predictor = get_flow_predictor(cfg_flow)
+        self.model = model
+        self.losses = losses
+
+    @torch.no_grad()
+    def preprocess_inputs(self,
+            batch_dict: dict,
+            flows: dict,
+            depths: Float[Tensor, "batch pair frame height width"],
+        ) -> tuple[Batch, Flows, Float[Tensor, "batch frame height_scaled width_scaled"]]:
+        # Convert the batch from an untyped dict to a typed dataclass.
+        batch = Batch(**batch_dict)
+        batch, _ = crop_and_resize_batch_for_model(batch, self.cfg_cropping)
+        b, f, _, h, w = batch.videos.shape
+        assert f==2, "Flowmap loss only for pairs of images"
+        
+        # Create flow structures
+        flows = Flows(**flows)
+        flows.forward = self.flow_predictor.rescale_flow(flows.forward, (h,w)) #(batch, pair=1, height_scaled, width_scaled, 2)
+        flows.backward = self.flow_predictor.rescale_flow(flows.backward, (h,w)) #(batch, pair=1, height_scaled, width_scaled, 2)
+        flows.forward_mask = self.flow_predictor.rescale_mask(flows.forward_mask, (h,w)) #(batch, pair=1, height_scaled, width_scaled)
+        flows.backward_mask = self.flow_predictor.rescale_mask(flows.backward_mask, (h,w)) #(batch, pair=1, height_scaled, width_scaled)
+
+        # Rescale depth
+        depths = rearrange(depths[...,None], "b f h w xy -> (b f) xy h w")
+        depths = F.interpolate(depths, (h,w), mode="nearest")
+        depths = rearrange(depths, "(b f) xy h w -> b f h w xy", b=b, f=f).squeeze(-1)
+
+        return batch, flows, depths
+
+    def training_step(
+            self,
+            batch: dict,
+            flows: dict,
+            depths: Float[Tensor, "batch frame height width"],
+        ) -> Loss:
+        batch, flows, depths = self.preprocess_inputs(batch, flows, depths) #TODO adapt preprocessing for depth and flow
+
+        # Compute depths, poses, and intrinsics using the model.
+        model_output = self.model(batch, flows, depths, self.global_step) #TODO adapter forward flowmap pass to take depth as input
+
+        # Compute and log the loss.
+        total_loss = 0
+        for loss_fn in self.losses:
+            loss = loss_fn.forward(batch, flows, None, model_output, self.global_step)
+            self.log(f"train/loss/{loss_fn.cfg.name}", loss)
+            total_loss = total_loss + loss
+
+        # Log intrinsics error.
+        if batch.intrinsics is not None:
+            fx_hat = reduce(model_output.intrinsics[..., 0, 0], "b f ->", "mean")
+            fy_hat = reduce(model_output.intrinsics[..., 1, 1], "b f ->", "mean")
+            fx_gt = reduce(batch.intrinsics[..., 0, 0], "b f ->", "mean")
+            fy_gt = reduce(batch.intrinsics[..., 1, 1], "b f ->", "mean")
+            self.log("train/intrinsics/fx_error", (fx_gt - fx_hat).abs())
+            self.log("train/intrinsics/fy_error", (fy_gt - fy_hat).abs())
+
+        return total_loss

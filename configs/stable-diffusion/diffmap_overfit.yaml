@@ -104,6 +104,44 @@ model:
           num_res_blocks: 2
           attn_resolutions: []
           dropout: 0.0
+    
+    flowmap_loss_config:
+      flow:
+        name: raft
+        num_flow_updates: 32
+        max_batch_size: 8
+        show_progress_bar: true
+
+      model:
+        use_correspondence_weights: false
+        intrinsics:
+          name: softmin
+          num_procrustes_points: 8192
+          min_focal_length: 0.5
+          max_focal_length: 2.0
+          num_candidates: 60
+          regression: null
+        extrinsics:
+          name: procrustes
+          num_points: 1000
+          randomize_points: false
+
+      loss:
+        flow:
+          weight: 1.0
+          enable_after: 0
+          mapping:
+            name: huber
+            delta: 0.01
+
+      model_wrapper:
+        patch_size: 32 #a modifier?
+
+      cropping:
+        image_shape: [128, 128] #a modifier?
+        flow_scale_multiplier: 4
+        patch_size: 32 #a modifier?
+
 
 #params datamodules and datasets
 data:
