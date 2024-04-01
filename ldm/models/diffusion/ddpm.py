@@ -2500,7 +2500,7 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
             modality = self.modalities[k]
 
             if modality ==  "depth_ctxt": #flowmap loss
-                loss_flowmap = self.flowmap_loss_wrapper.training_step(dummy_flowmap_batch, flows, depths_recon)
+                loss_flowmap = self.flowmap_loss_wrapper.training_step(dummy_flowmap_batch, flows, depths_recon, self.global_step)
                 loss_m = loss_flowmap
                 loss_dict.update({f'{prefix}_flowmap/loss': loss_flowmap})
                 loss += loss_m
