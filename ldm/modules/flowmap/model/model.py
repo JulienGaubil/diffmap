@@ -134,7 +134,8 @@ class FlowmapModelDiff(nn.Module):
         self,
         batch: Batch,
         flows: Flows,
-        depths: Float[Tensor, "batch pair height width"],
+        depths: Float[Tensor, "batch frame height width"],
+        correspondence_weights: Float[Tensor, "batch pair height width"],
         global_step: int,
     ) -> ModelOutput:
         device = batch.videos.device
@@ -143,7 +144,7 @@ class FlowmapModelDiff(nn.Module):
         # Run the backbone, which provides depths and correspondence weights TODO replace hack
         backbone_out = BackboneOutput(**{
             "depths": depths,
-            "weights": torch.ones_like(depths[:,:-1,:,:])
+            "weights": correspondence_weights
             }
         )
 

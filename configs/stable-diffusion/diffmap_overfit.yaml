@@ -113,7 +113,7 @@ model:
         show_progress_bar: true
 
       model:
-        use_correspondence_weights: false
+        use_correspondence_weights: true
         intrinsics:
           name: softmin
           num_procrustes_points: 8192
@@ -138,7 +138,7 @@ model:
         patch_size: 32 #a modifier?
 
       cropping:
-        image_shape: [128, 128] #a modifier?
+        image_shape: [512, 512] #a modifier?
         flow_scale_multiplier: 4
         patch_size: 32 #a modifier?
 

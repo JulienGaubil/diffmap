@@ -2131,7 +2131,7 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
 
     @torch.no_grad()
     def get_input(self, batch, k, return_first_stage_outputs=False, force_c_encode=False,
-                    cond_key=None, return_original_cond=False, bs=None, return_x=False, return_flows=False):
+                    cond_key=None, return_original_cond=False, bs=None, return_x=False, return_flows_depths=False):
         '''
         Returns the inputs and outputs required for a diffusion sampling process and to supervise the model.
         Inputs:
@@ -2216,13 +2216,15 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
             out.extend([x, xrec])
         if return_x:
             out.append(x)
-        if return_flows: #TODO properly handle modalities
+        if return_flows_depths: #TODO properly handle modalities
             flows = {"forward": batch['optical_flow'].to(self.device), "backward": batch['optical_flow_bwd'].to(self.device)}
             flows_masks = {"forward": batch['optical_flow_mask'].to(self.device), "backward": batch['optical_flow_bwd_mask'].to(self.device)}
+            correspondence_weights = batch['correspondence_weights'].to(self.device)
             if bs is not None:
                 flows["forward"] = flows["forward"][:bs,:,:,:]
-                flows_masks = flows["backward"][:bs,:,:]                
-            out.extend([flows, flows_masks])
+                flows_masks = flows["backward"][:bs,:,:]  
+                correspondence_weights = correspondence_weights[:bs,:,:]             
+            out.extend([flows, flows_masks, correspondence_weights])
         if return_original_cond:
             out.append(xc)
         return out
@@ -2231,9 +2233,11 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
             self,
             x_recon_flowmap: Float[Tensor, "batch channels_latent height_latent width_latent"],
             flows: dict[str, Float[Tensor, "batch channels height width"]],
-            flows_masks: dict[str, Float[Tensor, "batch height width"]]
+            flows_masks: dict[str, Float[Tensor, "batch height width"]],
+            correspondence_weights: Float[Tensor, "batch height width"]
         ) -> tuple[dict[str, Tensor], dict[str, Tensor], Float[Tensor, "batch frame height width"]]:
         # Prepare depth, should be (batch frame height width)
+        correspondence_weights = correspondence_weights[:, None, :, :]
         depths_recon = torch.stack([
             x_recon_flowmap["depth_ctxt"].mean(1),
             x_recon_flowmap["depth_trgt"].mean(1)
@@ -2268,7 +2272,7 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
             "datasets": [""],
         }
 
-        return dummy_flowmap_batch, flows, depths_recon
+        return dummy_flowmap_batch, flows, depths_recon, correspondence_weights
     
     def _get_denoise_row_from_list(self, samples, desc='', force_no_decoder_quantization=False, modality=None):
         denoise_row = []
@@ -2401,6 +2405,7 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
                     x_samples = self.decode_first_stage(samples_m) #decodes generated samples to image space
                 else:
                     x_samples = self.first_stage_model_flow.decode((1/self.scale_factor) * samples_m) #decodes generated samples to image space
+                    log[modality]["correspondence_weights"] = repeat(batch["correspondence_weights"], "b h w -> b c h w", c=3)
 
                 log[modality]["samples"] = x_samples
                 if plot_denoise_rows:
@@ -2453,11 +2458,11 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
         return log
     
     def shared_step(self, batch, **kwargs):
-        z, c, flows, flows_masks  = self.get_input(batch, self.first_stage_key, return_flows=True)
-        loss = self(z, c, flows, flows_masks)
+        z, c, flows, flows_masks, correspondence_weights  = self.get_input(batch, self.first_stage_key, return_flows_depths=True)
+        loss = self(z, c, flows, flows_masks, correspondence_weights)
         return loss
 
-    def forward(self, z, c, flows, flows_masks, *args, **kwargs):
+    def forward(self, z, c, flows, flows_masks, correspondence_weights, *args, **kwargs):
         t = torch.randint(0, self.num_timesteps, (z.shape[0],), device=self.device).long()
         if self.model.conditioning_key is not None:
             assert c is not None
@@ -2466,9 +2471,9 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
             if self.shorten_cond_schedule:  # TODO: drop this option
                 tc = self.cond_ids[t].to(self.device)
                 c = self.q_sample(x_start=c, t=tc, noise=torch.randn_like(c.float()))
-        return self.p_losses(z, c, flows, flows_masks, t, *args, **kwargs)
+        return self.p_losses(z, c, flows, flows_masks, correspondence_weights, t, *args, **kwargs)
 
-    def p_losses(self, z_start, cond, flows, flows_masks, t, noise=None):
+    def p_losses(self, z_start, cond, flows, flows_masks, correspondence_weights, t, noise=None):
         # Prepares input for U-Net diffusion
         noise = default(noise, lambda: torch.randn_like(z_start))
         z_noisy = self.q_sample(x_start=z_start, t=t, noise=noise)
@@ -2486,7 +2491,7 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
 
         # Prepares flowmap inputs
         x_recon_flowmap = self.decode_first_stage_all(z_recon, modalities=["depth_trgt", "depth_ctxt", "optical_flow"])
-        dummy_flowmap_batch, flows, depths_recon = self.get_input_flowmap(x_recon_flowmap, flows, flows_masks)
+        dummy_flowmap_batch, flows, depths_recon, correspondence_weights = self.get_input_flowmap(x_recon_flowmap, flows, flows_masks, correspondence_weights)
 
         #computes losses for every modality
         loss_dict = {}
@@ -2500,7 +2505,7 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
             modality = self.modalities[k]
 
             if modality ==  "depth_ctxt": #flowmap loss
-                loss_flowmap = self.flowmap_loss_wrapper.training_step(dummy_flowmap_batch, flows, depths_recon, self.global_step)
+                loss_flowmap = self.flowmap_loss_wrapper.training_step(dummy_flowmap_batch, flows, depths_recon, correspondence_weights, self.global_step)
                 loss_m = loss_flowmap
                 loss_dict.update({f'{prefix}_flowmap/loss': loss_flowmap})
                 loss += loss_m
@@ -2530,6 +2535,7 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
         if self.learn_logvar:
             loss_dict.update({f'{prefix}/loss_gamma': loss_gamma.mean()})
         loss_dict.update({f'{prefix}/loss_vlb': loss_vlb})
+        loss_dict.update({f'{prefix}/loss': loss})
         
     
         return loss, loss_dict

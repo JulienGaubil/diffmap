@@ -167,12 +167,13 @@ class FlowmapLossWrapper(LightningModule):
             batch: dict,
             flows: dict,
             depths: Float[Tensor, "batch frame height width"],
+            correspondence_weights: Float[Tensor, "batch frame-1 height width"],
             global_step: int,
         ) -> Loss:
         batch, flows, depths = self.preprocess_inputs(batch, flows, depths) #TODO adapt preprocessing for depth and flow
 
         # Compute depths, poses, and intrinsics using the model.
-        model_output = self.model(batch, flows, depths, global_step) #TODO adapter forward flowmap pass to take depth as input
+        model_output = self.model(batch, flows, depths, correspondence_weights, global_step) #TODO adapter forward flowmap pass to take depth as input
 
         # Compute and log the loss.
         total_loss = 0

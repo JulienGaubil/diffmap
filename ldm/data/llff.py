@@ -122,9 +122,7 @@ class LLFFDiffmapDataset(Dataset):
         #defines transforms
         self.tform = make_tranforms(image_transforms)
         self.tform_flow, self.tform_flow_mask = self.initialize_flow_tform()
-        self.tform_depth = self.initialize_depth_tform()
-
-
+        self.tform_depth, self.correspondence_weights_transforms = self.initialize_depth_tform()
 
         #loads flow and depth - TODO do this properly
         assert len(self.scenes) == 1, "Multi scene LLFFDiffmapDataset not yet implemented"
@@ -132,7 +130,8 @@ class LLFFDiffmapDataset(Dataset):
         self.flows_bwd = torch.load(os.path.join(root_dir, scenes[0], "flow_backward", "flows_backward.pt")) # (B,N,H,W,C), B=1, C=2
         self.flows_fwd_mask = torch.load(os.path.join(root_dir, scenes[0], "flow_forward", "flows_forward_mask.pt")) # (B,N,H,W), B=1
         self.flows_bwd_mask = torch.load(os.path.join(root_dir, scenes[0], "flow_backward", "flows_backward_mask.pt")) # (B,N,H,W), B=1
-        self.depths = torch.load(os.path.join(root_dir, scenes[0], "depths", "depths.pt")) # (B,N,H,W), B=1
+        self.depths = torch.load(os.path.join(root_dir, scenes[0], "depths", "depths.pt")).detach() # (B,N,H,W), B=1
+        self.correspondence_weights = torch.load(os.path.join(root_dir, scenes[0], "depths", "correspondence_weights.pt")).detach() # (B,N-1,H,W), B=1
 
 
     def initialize_flow_tform(self):
@@ -170,14 +169,17 @@ class LLFFDiffmapDataset(Dataset):
                 crop_size = t.size
 
         depth_transforms = [
-            # transforms.Lambda(lambda x: rearrange(x , 'h w c -> c h w')),
             NormalizeDepth(),
             ResizeDepth(new_size),
             transforms.CenterCrop(crop_size),
-            # transforms.Lambda(lambda x: rearrange(x , 'c h w -> h w c')),            
+        ]
+        correspondence_weights_transforms = [
+            ResizeDepth(new_size),
+            transforms.CenterCrop(crop_size),
         ]
         depth_transforms = transforms.Compose(depth_transforms)
-        return depth_transforms
+        correspondence_weights_transforms = transforms.Compose(correspondence_weights_transforms)
+        return depth_transforms, correspondence_weights_transforms
 
     def prepare_pairs(self, n_val_samples_scene):
         '''
@@ -240,6 +242,8 @@ class LLFFDiffmapDataset(Dataset):
         # Load depth
         data['depth_trgt'] = self._load_depth(curr_idx)
         data['depth_ctxt'] = self._load_depth(prev_idx)
+        data['correspondence_weights'] = self._load_correspondence_weights(prev_idx)
+
         return data
 
     def _load_im(self, filename):
@@ -261,6 +265,11 @@ class LLFFDiffmapDataset(Dataset):
         #extends to three channels to be processed like an image
         depth_transformed = torch.stack([depth_transformed]*3, dim=2) #(H,W,C)
         return depth_transformed
+    
+    def _load_correspondence_weights(self, index):
+        correspondence_weights = self.correspondence_weights[0,index,:,:]
+        depth_weights_transformed = self.correspondence_weights_transforms(correspondence_weights) #(H,W)
+        return depth_weights_transformed
 
 
 
