@@ -51,6 +51,14 @@ def disabled_train(self, mode=True):
 def uniform_on_device(r1, r2, shape, device):
     return (r1 - r2) * torch.rand(*shape, device=device) + r2
 
+# def hook_fn_fwd(m,inpt,outpt):
+#     print(outpt.size())
+#     activations.copy_(outpt[0].())
+
+# def hook_fn_bwd(m,inpt,outpt):
+#     print(outpt.size())
+#     gradients.copy_(outpt[0])
+
 
 class DDPM(pl.LightningModule):
     # classic DDPM with Gaussian diffusion, in image space
@@ -2076,6 +2084,27 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
 
         if flowmap_loss_config is not None:
             self.flowmap_loss_wrapper = self.init_flowmap_loss(flowmap_loss_config)
+
+
+        # global activations, gradients
+        # activations, gradients = torch.zeros((512,7,7)), torch.zeros((1,512, 7, 7))
+        # self.model.diffusion_model.input_blocks[0][0].register_full_backward_hook(hook_fn_bwd)  #output less constant with layer3 and input
+
+
+
+        # self.model.diffusion_model.input_blocks[0][0].register_forward_hook(hook_fn_fwd)  #output less constant with layer3 and input
+
+
+        # print("Training unet input, output conv and cross-attention layers")
+        #     params.extend(list(self.model.diffusion_model.input_blocks[0][0].parameters()))
+        #     params.extend(list(self.model.diffusion_model.out[2].parameters()))
+        #     for n, m in self.model.named_modules():
+        #         if isinstance(m, CrossAttention) and n.endswith('attn2'):
+        #             params.extend(m.parameters())
+
+
+
+
             
     def init_flowmap_loss(self, cfg_dict):
         cfg = get_typed_root_config_diffmap(cfg_dict, DiffmapCfg)
@@ -2089,16 +2118,20 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
             model,
             losses,
         )
-        return flowmap_loss_wrapper    
+        return flowmap_loss_wrapper
         
     def split_modalities(
             self,
             z: Float[Tensor, "_ 4*C _ _"],
-            C: int = None
+            C: int = None,
+            modalities: list[str] | None = None
         ) -> dict[str, Float[Tensor, "_ C _ _"]]:
         # Splits input tensor along every modality of chunk size C
         C = default(C, self.channels_m)
-        return dict(zip(self.modalities, torch.split(z, C, dim=1)))
+        modalities = default(modalities, self.modalities)
+        split_all = dict(zip(self.modalities, torch.split(z, C, dim=1)))
+        out = {m: split_all[m] for m in modalities}
+        return out
     
     def decode_first_stage_modality(
             self,
@@ -2121,7 +2154,7 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
         ) -> dict[str, Float[Tensor, "_ 3 _ _"]]:
         # Decodes input modalities
         modalities = default(modalities, self.modalities)
-        z_split = self.split_modalities(z)
+        z_split = self.split_modalities(z, modalities=modalities)
 
         x_sample = dict()
         for modality in modalities:
@@ -2459,6 +2492,7 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
     
     def shared_step(self, batch, **kwargs):
         z, c, flows, flows_masks, correspondence_weights  = self.get_input(batch, self.first_stage_key, return_flows_depths=True)
+        print("SIZES : ", z.size(), c.size(), flows["forward"].size())
         loss = self(z, c, flows, flows_masks, correspondence_weights)
         return loss
 
@@ -2488,9 +2522,11 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
             z_recon = self.predict_start_from_noise(z_noisy, t=t, noise=model_output) #x_0 estimated from the noise estimated and x_t:=x
         else:
             raise NotImplementedError()
+        
+        print("Z_RECON SIZE MIN MAX MEAN REQUIRE_GRAD : ", z_recon.size(), z_recon.min(), z_recon.max(), z_recon.mean(), z_recon.requires_grad)
 
         # Prepares flowmap inputs
-        x_recon_flowmap = self.decode_first_stage_all(z_recon, modalities=["depth_trgt", "depth_ctxt", "optical_flow"])
+        x_recon_flowmap = self.decode_first_stage_all(z_recon, modalities=["depth_trgt", "depth_ctxt"])
         dummy_flowmap_batch, flows, depths_recon, correspondence_weights = self.get_input_flowmap(x_recon_flowmap, flows, flows_masks, correspondence_weights)
 
         #computes losses for every modality
@@ -2512,30 +2548,36 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
             elif modality == "depth_trgt":
                 pass #TODO remove hack and properly handle modalities
             else: #diffusion losses
-                loss_simple_m = self.get_loss(model_output[:, k*4:(k+1)*4, ...], target[:, k*4:(k+1)*4, ...], mean=False).mean([1, 2, 3])
-                loss_simple += loss_simple_m
-                loss_dict.update({f'{prefix}_{modality}/loss_simple': loss_simple_m.clone().detach().mean()})
+                pass
+                # loss_simple_m = self.get_loss(model_output[:, k*4:(k+1)*4, ...], target[:, k*4:(k+1)*4, ...], mean=False).mean([1, 2, 3])
+                # loss_simple += loss_simple_m
+                # loss_dict.update({f'{prefix}_{modality}/loss_simple': loss_simple_m.clone().detach().mean()})
 
-                loss_gamma_m = loss_simple_m / torch.exp(logvar_t) + logvar_t
-                if self.learn_logvar:
-                    loss_dict.update({f'{prefix}_{modality}/loss_gamma': loss_gamma_m.mean()})
-                loss_gamma += loss_gamma_m
+                # loss_gamma_m = loss_simple_m / torch.exp(logvar_t) + logvar_t
+                # if self.learn_logvar:
+                #     loss_dict.update({f'{prefix}_{modality}/loss_gamma': loss_gamma_m.mean()})
+                # loss_gamma += loss_gamma_m
 
-                loss_vlb_m = self.get_loss(model_output[:, k*4:(k+1)*4, ...], target[:, k*4:(k+1)*4, ...], mean=False).mean(dim=(1, 2, 3))
-                loss_vlb_m = (self.lvlb_weights[t] * loss_vlb_m).mean()
-                loss_dict.update({f'{prefix}_{modality}/loss_vlb': loss_vlb_m})
-                loss_vlb += loss_vlb_m
+                # loss_vlb_m = self.get_loss(model_output[:, k*4:(k+1)*4, ...], target[:, k*4:(k+1)*4, ...], mean=False).mean(dim=(1, 2, 3))
+                # loss_vlb_m = (self.lvlb_weights[t] * loss_vlb_m).mean()
+                # loss_dict.update({f'{prefix}_{modality}/loss_vlb': loss_vlb_m})
+                # loss_vlb += loss_vlb_m
 
-                loss_m = self.l_simple_weight * loss_gamma_m.mean() + (self.original_elbo_weight * loss_vlb_m)
-                loss_dict.update({f'{prefix}_{modality}/loss': loss_m})
+                # loss_m = self.l_simple_weight * loss_gamma_m.mean() + (self.original_elbo_weight * loss_vlb_m)
+                # loss_dict.update({f'{prefix}_{modality}/loss': loss_m})
 
-                loss += loss_m
+                # loss += loss_m
 
-        loss_dict.update({f'{prefix}/loss_simple': loss_simple.mean()})
-        if self.learn_logvar:
-            loss_dict.update({f'{prefix}/loss_gamma': loss_gamma.mean()})
-        loss_dict.update({f'{prefix}/loss_vlb': loss_vlb})
+        # loss_dict.update({f'{prefix}/loss_simple': loss_simple.mean()})
+        # if self.learn_logvar:
+        #     loss_dict.update({f'{prefix}/loss_gamma': loss_gamma.mean()})
+        # loss_dict.update({f'{prefix}/loss_vlb': loss_vlb})
         loss_dict.update({f'{prefix}/loss': loss})
+
+        print("LOSS : ", loss, loss.requires_grad)
+        print('')
+        print('')
+        print('')
         
     
         return loss, loss_dict

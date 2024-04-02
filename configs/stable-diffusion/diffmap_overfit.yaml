@@ -7,18 +7,19 @@ model:
     num_timesteps_cond: 1
     log_every_t: 200 #when logging generated samples, frequency of logging for intermediate samples  
     timesteps: 1000 #sampling timesteps in forward/backward
-    first_stage_key: "trgt" #key in batch for the noised signal
+    first_stage_key: "depth_trgt" #key in batch for the noised signal
     cond_stage_key: "ctxt" #key in batch for the clean conditioning signal
-    image_size: 64 #2D resolution in the latent space, also controls sampling resolution (x8)
-    channels: 16 #number of channels in latent space
+    image_size: 16 #2D resolution in the latent space, also controls sampling resolution (x8)
+    channels: 8 #number of channels in latent space
     cond_stage_trainable: false   # Note: different from the one we trained before
     conditioning_key: crossattn
     monitor: val/loss_simple_ema
     scale_factor: 0.18215
+    parameterization: eps
     unet_trainable: conv_io_attn  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn)
     modalities:
-    - trgt
-    - optical_flow
+    # - trgt
+    # - optical_flow
     - depth_trgt
     - depth_ctxt
     ckpt_path: null
@@ -36,8 +37,8 @@ model:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
         image_size: 32 # unused
-        in_channels: 16 #number of input channels U-Net, should be multiple of 4 (original size)
-        out_channels: 16 #number of output channels U-Net, should be multiple of 4 (original size)
+        in_channels: 8 #number of input channels U-Net, should be multiple of 4 (original size)
+        out_channels: 8 #number of output channels U-Net, should be multiple of 4 (original size)
         model_channels: 320
         attention_resolutions: [ 4, 2, 1 ]
         num_res_blocks: 2
@@ -128,7 +129,7 @@ model:
 
       loss:
         flow:
-          weight: 1.0
+          weight: 10.0
           enable_after: 0
           mapping:
             name: huber
@@ -138,7 +139,7 @@ model:
         patch_size: 32 #a modifier?
 
       cropping:
-        image_shape: [512, 512] #a modifier?
+        image_shape: [128, 128] #a modifier?
         flow_scale_multiplier: 4
         patch_size: 32 #a modifier?
 
@@ -161,11 +162,11 @@ data:
         image_transforms:
         - target: torchvision.transforms.Resize
           params:
-            size: 512 #train img resolution
+            size: 128 #train img resolution
             interpolation: 3
         - target: torchvision.transforms.CenterCrop
           params:
-            size: 512
+            size: 128
     validation: #params val dataset
       target: ldm.data.llff.LLFFDiffmapDataset
       params:
@@ -177,11 +178,11 @@ data:
         image_transforms:
         - target: torchvision.transforms.Resize
           params:
-            size: 512 #val img resolution
+            size: 128 #val img resolution
             interpolation: 3
         - target: torchvision.transforms.CenterCrop
           params:
-            size: 512
+            size: 128
 
 lightning:
   find_unused_parameters: false
