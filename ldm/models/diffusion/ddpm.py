@@ -2128,7 +2128,7 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
             z_m = z_split[modality]
             x_sample[modality] = self.decode_first_stage_modality(z_m, modality)
         return x_sample
-
+    
     @torch.no_grad()
     def get_input(self, batch, k, return_first_stage_outputs=False, force_c_encode=False,
                     cond_key=None, return_original_cond=False, bs=None, return_x=False, return_flows_depths=False):
@@ -2251,9 +2251,9 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
         depths_recon = depths_recon.clip(min=0, max=1)
 
         # Prepare flow
-        # flows_recon = rearrange(x_recon_flowmap["optical_flow"][:, None, :2, :, :], 'b f xy w h -> b f w h xy') #estimated clean forward flow, TODO, should be (batch pair height width 2)
-        flows_fwd = rearrange(flows["forward"][:, None, :2, :, :], 'b f xy w h -> b f w h xy')  #gt clean forward flows, TODO, should be (batch pair height width 2)
-        flows_bwd = rearrange(flows["backward"][:, None, :2, :, :], 'b f xy w h -> b f w h xy')  #gt clean backward flows, TODO, should be (batch pair height width 2)
+        flows_recon = rearrange(x_recon_flowmap["optical_flow"][:, None, :2, :, :], 'b f xy w h -> b f w h xy') #estimated clean forward flow, TODO, should be (batch pair height width 2)
+        flows_fwd = flows["forward"][:, None, :, :, :2]  #gt clean forward flows, TODO, should be (batch pair height width 2)
+        flows_bwd = flows["backward"][:, None, :, :, :2]  #gt clean backward flows, TODO, should be (batch pair height width 2)
         flows_mask_fwd = flows_masks["forward"][:, None, :, :] #gt clean forward flows consistency masks, TODO, should be (batch pair height width)
         flows_mask_bwd = flows_masks["backward"][:, None, :, :] #gt clean backward flows consistency masks, TODO, should be (batch pair height width)
         flows = {

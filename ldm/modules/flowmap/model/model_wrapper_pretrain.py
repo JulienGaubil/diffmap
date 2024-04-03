@@ -150,14 +150,14 @@ class FlowmapLossWrapper(LightningModule):
         
         # Create flow structures
         flows = Flows(**flows)
-        flows.forward = self.flow_predictor.rescale_flow(flows.forward, (h,w)) #(batch, pair=1, height_scaled, width_scaled, 2)
-        flows.backward = self.flow_predictor.rescale_flow(flows.backward, (h,w)) #(batch, pair=1, height_scaled, width_scaled, 2)
-        flows.forward_mask = self.flow_predictor.rescale_mask(flows.forward_mask, (h,w)) #(batch, pair=1, height_scaled, width_scaled)
-        flows.backward_mask = self.flow_predictor.rescale_mask(flows.backward_mask, (h,w)) #(batch, pair=1, height_scaled, width_scaled)
+        # flows.forward = self.flow_predictor.rescale_flow(flows.forward, (h,w)) #(batch, pair=1, height_scaled, width_scaled, 2)
+        # flows.backward = self.flow_predictor.rescale_flow(flows.backward, (h,w)) #(batch, pair=1, height_scaled, width_scaled, 2)
+        # flows.forward_mask = self.flow_predictor.rescale_mask(flows.forward_mask, (h,w)) #(batch, pair=1, height_scaled, width_scaled)
+        # flows.backward_mask = self.flow_predictor.rescale_mask(flows.backward_mask, (h,w)) #(batch, pair=1, height_scaled, width_scaled)
 
         # Rescale depth
         depths = rearrange(depths[...,None], "b f h w xy -> (b f) xy h w")
-        depths = F.interpolate(depths, (h,w), mode="nearest")
+        # depths = F.interpolate(depths, (h,w), mode="nearest")
         depths = rearrange(depths, "(b f) xy h w -> b f h w xy", b=b, f=f).squeeze(-1)
 
         return batch, flows, depths
