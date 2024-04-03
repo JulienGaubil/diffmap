@@ -49,7 +49,6 @@ class CommonCfg:
 
 @dataclass
 class CommonDiffmapCfg:
-    flow: FlowPredictorCfg
     model: FlowmapModelDiffCfg
     loss: list[LossCfg]
     cropping: CroppingCfg

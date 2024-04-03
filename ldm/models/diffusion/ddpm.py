@@ -51,13 +51,6 @@ def disabled_train(self, mode=True):
 def uniform_on_device(r1, r2, shape, device):
     return (r1 - r2) * torch.rand(*shape, device=device) + r2
 
-# def hook_fn_fwd(m,inpt,outpt):
-#     print(outpt.size())
-#     activations.copy_(outpt[0].())
-
-# def hook_fn_bwd(m,inpt,outpt):
-#     print(outpt.size())
-#     gradients.copy_(outpt[0])
 
 
 class DDPM(pl.LightningModule):
@@ -2084,27 +2077,6 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
 
         if flowmap_loss_config is not None:
             self.flowmap_loss_wrapper = self.init_flowmap_loss(flowmap_loss_config)
-
-
-        # global activations, gradients
-        # activations, gradients = torch.zeros((512,7,7)), torch.zeros((1,512, 7, 7))
-        # self.model.diffusion_model.input_blocks[0][0].register_full_backward_hook(hook_fn_bwd)  #output less constant with layer3 and input
-
-
-
-        # self.model.diffusion_model.input_blocks[0][0].register_forward_hook(hook_fn_fwd)  #output less constant with layer3 and input
-
-
-        # print("Training unet input, output conv and cross-attention layers")
-        #     params.extend(list(self.model.diffusion_model.input_blocks[0][0].parameters()))
-        #     params.extend(list(self.model.diffusion_model.out[2].parameters()))
-        #     for n, m in self.model.named_modules():
-        #         if isinstance(m, CrossAttention) and n.endswith('attn2'):
-        #             params.extend(m.parameters())
-
-
-
-
             
     def init_flowmap_loss(self, cfg_dict):
         cfg = get_typed_root_config_diffmap(cfg_dict, DiffmapCfg)
@@ -2114,7 +2086,6 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
         flowmap_loss_wrapper = FlowmapLossWrapper(
             cfg.model_wrapper,
             cfg.cropping,
-            cfg.flow,
             model,
             losses,
         )
@@ -2285,10 +2256,11 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
 
         # Prepare flow
         # flows_recon = rearrange(x_recon_flowmap["optical_flow"][:, None, :2, :, :], 'b f xy w h -> b f w h xy') #estimated clean forward flow, TODO, should be (batch pair height width 2)
-        flows_fwd = rearrange(flows["forward"][:, None, :2, :, :], 'b f xy w h -> b f w h xy')  #gt clean forward flows, TODO, should be (batch pair height width 2)
-        flows_bwd = rearrange(flows["backward"][:, None, :2, :, :], 'b f xy w h -> b f w h xy')  #gt clean backward flows, TODO, should be (batch pair height width 2)
+        flows_fwd = flows["forward"][:, None, :, :, :2]  #gt clean forward flows, TODO, should be (batch pair height width 2)
+        flows_bwd = flows["backward"][:, None, :, :, :2]  #gt clean backward flows, TODO, should be (batch pair height width 2)
         flows_mask_fwd = flows_masks["forward"][:, None, :, :] #gt clean forward flows consistency masks, TODO, should be (batch pair height width)
         flows_mask_bwd = flows_masks["backward"][:, None, :, :] #gt clean backward flows consistency masks, TODO, should be (batch pair height width)
+        
         flows = {
             "forward": flows_fwd,
             "backward": flows_bwd,
@@ -2492,7 +2464,6 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
     
     def shared_step(self, batch, **kwargs):
         z, c, flows, flows_masks, correspondence_weights  = self.get_input(batch, self.first_stage_key, return_flows_depths=True)
-        print("SIZES : ", z.size(), c.size(), flows["forward"].size())
         loss = self(z, c, flows, flows_masks, correspondence_weights)
         return loss
 
@@ -2523,8 +2494,6 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
         else:
             raise NotImplementedError()
         
-        print("Z_RECON SIZE MIN MAX MEAN REQUIRE_GRAD : ", z_recon.size(), z_recon.min(), z_recon.max(), z_recon.mean(), z_recon.requires_grad)
-
         # Prepares flowmap inputs
         x_recon_flowmap = self.decode_first_stage_all(z_recon, modalities=["depth_trgt", "depth_ctxt"])
         dummy_flowmap_batch, flows, depths_recon, correspondence_weights = self.get_input_flowmap(x_recon_flowmap, flows, flows_masks, correspondence_weights)
@@ -2541,9 +2510,9 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
             modality = self.modalities[k]
 
             if modality ==  "depth_ctxt": #flowmap loss
-                loss_flowmap = self.flowmap_loss_wrapper.training_step(dummy_flowmap_batch, flows, depths_recon, correspondence_weights, self.global_step)
+                loss_flowmap = self.flowmap_loss_wrapper(dummy_flowmap_batch, flows, depths_recon, correspondence_weights, self.global_step)
                 loss_m = loss_flowmap
-                loss_dict.update({f'{prefix}_flowmap/loss': loss_flowmap})
+                loss_dict.update({f'{prefix}_flowmap/loss': loss_flowmap.clone().detach()})
                 loss += loss_m
             elif modality == "depth_trgt":
                 pass #TODO remove hack and properly handle modalities
@@ -2572,13 +2541,54 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
         # if self.learn_logvar:
         #     loss_dict.update({f'{prefix}/loss_gamma': loss_gamma.mean()})
         # loss_dict.update({f'{prefix}/loss_vlb': loss_vlb})
-        loss_dict.update({f'{prefix}/loss': loss})
 
-        print("LOSS : ", loss, loss.requires_grad)
-        print('')
-        print('')
-        print('')
         
+        # print("GRADIENTS convin_0 mean : ", gradients_convin0.mean())
+        # print("GRADIENTS convin_1 mean : ", gradients_convin1.mean())
+
+        if prefix == "train":
+            try:
+                gradient_in = self.model.diffusion_model.input_blocks[0][0].weight._grad.abs().mean().clone().detach()
+                loss_dict.update({f'{prefix}/l1_gradient_convin': gradient_in})
+                # print("GRADIENTS convin_0.0.weight mean : ",  self.model.diffusion_model.input_blocks[0][0].weight._grad.mean())
+                # print("GRADIENTS convin_0.0.bias mean : ",  self.model.diffusion_model.input_blocks[0][0].bias._grad.mean())
+            except Exception:
+                pass
+            
+            try:
+                gradient_out = self.model.diffusion_model.out[2].weight._grad.abs().mean().clone().detach()
+                loss_dict.update({f'{prefix}/l1_gradient_weight_convout': gradient_out})
+                # print("GRADIENTS conv_out.weight mean : ",  self.model.diffusion_model.out[2].weight._grad.mean())
+                # print("GRADIENTS conv_out.bias mean : ", self.model.diffusion_model.out[2].bias._grad.mean())
+            except Exception:
+                pass
+                # print("OUTPUT DIDN'T RECEIVE GRAD")
+                # print("OUTPUT WEIGHT, BIAS SIZE : ", self.model.diffusion_model.out[2].weight.size(), self.model.diffusion_model.out[2].bias.size())
+                # print("OUTPUT WEIGHT, BIAS REQUIRE GRAD? : ", self.model.diffusion_model.out[2].weight.requires_grad, self.model.diffusion_model.out[2].bias.requires_grad)
+
+
+        # z0 = self.split_modalities(z_recon, modalities=['depth_ctxt', 'depth_trgt'])
+        # z0_depth_ctxt, z0_depth_trgt = z0['depth_ctxt'], z0['depth_trgt']
+        # x0_depth_ctxt, x0_depth_trgt = x_recon_flowmap['depth_ctxt'], x_recon_flowmap['depth_trgt']
+        # model_output_split = self.split_modalities(model_output, modalities=['depth_ctxt', 'depth_trgt'])
+        # model_output_depth_ctxt, model_output_depth_trgt = model_output_split['depth_ctxt'], model_output_split['depth_trgt']
+        
+        
+        # model_output.register_hook(lambda grad: print("GRAD MEAN MODEL OUTPUT :", grad.mean()))
+        # z_recon.register_hook(lambda grad: print("GRAD MEAN ESTIMATED Z0 :", grad.mean()))
+        # x_recon_flowmap['depth_trgt'].register_hook(lambda grad: print("GRAD MEAN X0_DEPTH_TRGT :", grad.mean()))
+        # x_recon_flowmap['depth_ctxt'].register_hook(lambda grad: print("GRAD MEAN X0_DEPTH_CTXT :", grad.mean()))
+        # depths_recon.register_hook(lambda grad: print("GRAD MEAN X0_DEPTHS FLOWMAP INPUT :", grad.mean()))
+        # z0_depth_ctxt.register_hook(lambda grad: print("GRAD MEAN Z0 ESTIMATED DEPTH_CTXT :", grad.mean()))
+        # z0_depth_trgt.register_hook(lambda grad: print("GRAD MEAN Z0 ESTIMATED DEPTH_TRGT :", grad.mean()))
+        # x0_depth_ctxt.register_hook(lambda grad: print("GRAD MEAN X0 ESTIMATED DEPTH_CTXT  :", grad.mean()))
+        # x0_depth_trgt.register_hook(lambda grad: print("GRAD MEAN X0 ESTIMATED DEPTH_TRGT :", grad.mean()))
+        # model_output_depth_ctxt.register_hook(lambda grad: print("GRAD MEAN MODEL OUTPUT DEPTH_CTXT  :", grad.mean()))
+        # model_output_depth_trgt.register_hook(lambda grad: print("GRAD MEAN MODEL OUTPUT DEPTH_TRGT :", grad.mean()))
+
+
+        
+        loss_dict.update({f'{prefix}/loss': loss})
     
         return loss, loss_dict
     
