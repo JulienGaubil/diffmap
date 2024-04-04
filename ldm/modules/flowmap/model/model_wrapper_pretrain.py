@@ -180,7 +180,7 @@ class FlowmapLossWrapper(nn.Module):
         total_loss = 0
         for loss_fn in self.losses:
             loss = loss_fn.forward(batch, flows, None, model_output, global_step)
-            self.log(f"train/loss/{loss_fn.cfg.name}", loss)
+            # self.log(f"train/loss/{loss_fn.cfg.name}", loss)
             total_loss = total_loss + loss
 
         # Log intrinsics error.
@@ -189,7 +189,7 @@ class FlowmapLossWrapper(nn.Module):
             fy_hat = reduce(model_output.intrinsics[..., 1, 1], "b f ->", "mean")
             fx_gt = reduce(batch.intrinsics[..., 0, 0], "b f ->", "mean")
             fy_gt = reduce(batch.intrinsics[..., 1, 1], "b f ->", "mean")
-            self.log("train/intrinsics/fx_error", (fx_gt - fx_hat).abs())
-            self.log("train/intrinsics/fy_error", (fy_gt - fy_hat).abs())
+            # self.log("train/intrinsics/fx_error", (fx_gt - fx_hat).abs())
+            # self.log("train/intrinsics/fy_error", (fy_gt - fy_hat).abs())
 
         return total_loss
