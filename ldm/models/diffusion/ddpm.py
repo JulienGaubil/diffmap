@@ -2498,18 +2498,10 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
                 return {modality:{key: log[key] for key in return_keys} for modality in self.modalities}
         return log
     
-<<<<<<< HEAD
     def shared_step(self, batch, **kwargs):
         z, c, flows, flows_masks, correspondence_weights  = self.get_input(batch, self.first_stage_key, return_flows_depths=True)
         loss = self(z, c, flows, flows_masks, correspondence_weights)
         return loss
-=======
-    def p_losses(self, x_start, cond, t, noise=None):
-        noise = default(noise, lambda: torch.randn_like(x_start))
-        x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
-        model_output = self.apply_model(x_noisy, t, cond)
-
->>>>>>> cond_concat
 
     def forward(self, z, c, flows, flows_masks, correspondence_weights, *args, **kwargs):
         t = torch.randint(0, self.num_timesteps, (z.shape[0],), device=self.device).long()
