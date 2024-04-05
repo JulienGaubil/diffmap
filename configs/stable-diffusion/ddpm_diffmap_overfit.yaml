@@ -15,7 +15,7 @@ model:
     conditioning_key: crossattn
     monitor: null
     parameterization: eps
-    unet_trainable: conv_io_attn  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn)
+    unet_trainable: all  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn)
     modalities:
     # - trgt
     # - optical_flow
@@ -159,6 +159,6 @@ lightning:
     # val_check_interval: 5 #frequency of validation in iterations
     # limit_val_batches: 0.0  # to disable validation
     num_sanity_val_steps: 0
-    accumulate_grad_batches: 1
+    accumulate_grad_batches: 4
     max_epochs: 1000 #max number of epochs performed, 1000 is the default
     max_steps: 15000  #max number of iterations performed, 1000 is the default
