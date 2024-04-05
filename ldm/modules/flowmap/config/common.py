@@ -42,7 +42,7 @@ class CommonCfg:
     flow: FlowPredictorCfg
     dataset: list[DatasetCfg]
     frame_sampler: FrameSamplerCfg
-    model: FlowmapModelDiffCfg
+    model: ModelCfg
     loss: list[LossCfg]
     visualizer: list[VisualizerCfg]
     cropping: CroppingCfg

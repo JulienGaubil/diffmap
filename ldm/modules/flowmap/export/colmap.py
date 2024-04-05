@@ -12,6 +12,7 @@ from ..misc.cropping import center_crop_intrinsics
 from ..model.model import ModelExports
 from ..model.projection import homogenize_points, sample_image_grid, unproject
 from ..third_party.colmap.read_write_model import Camera, Image, read_model, write_model
+import shutil
 
 
 def read_ply(path: Path) -> tuple[
@@ -107,7 +108,7 @@ def export_to_colmap(
     # Write out the images.
     (path / "images").mkdir(exist_ok=True, parents=True)
     for frame_path in frame_paths:
-        (path / "images" / frame_path.name).symlink_to(frame_path.absolute())
+        shutil.copy(frame_path, path / "images" / frame_path.name)
 
 
 def read_colmap_model(
@@ -207,4 +208,4 @@ def write_colmap_model(
         images[id] = Image(id, qvec, tvec, id, name, [], [])
 
     path.mkdir(exist_ok=True, parents=True)
-    write_model(cameras, images, {}, path)
+    write_model(cameras, images, None, path)

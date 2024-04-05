@@ -6,11 +6,11 @@ import numpy as np
 from einops import rearrange
 from jaxtyping import Float
 from matplotlib.figure import Figure
-from scipy import spatial
 from torch import Tensor
 
 from ..dataset.types import Batch
 from ..flow import Flows
+from ..misc.ate import compute_ate
 from ..misc.image_io import fig_to_image
 from ..model.model import Model, ModelOutput
 from ..tracking import Tracks
@@ -70,16 +70,18 @@ class VisualizerTrajectory(Visualizer[VisualizerTrajectoryCfg]):
 
         # Compute the ATE.
         try:
-            positions_gt, positions_hat, _ = spatial.procrustes(
-                batch.extrinsics[0, :, :3, 3].cpu().numpy(),
-                model_output.extrinsics[0, :, :3, 3].detach().cpu().numpy(),
+            ate, positions_gt, positions_hat = compute_ate(
+                batch.extrinsics[0, :, :3, 3],
+                model_output.extrinsics[0, :, :3, 3],
             )
         except ValueError:
             return {}
-        ate = ((positions_hat - positions_gt) ** 2).mean() ** 0.5
 
         # Visualize the trajectory.
-        fg = generate_plot([positions_gt, positions_hat], ["Ground-truth", "Predicted"])
+        fg = generate_plot(
+            [positions_gt.cpu().numpy(), positions_hat.cpu().numpy()],
+            ["Ground-truth", "Predicted"],
+        )
         visualization = fig_to_image(fg)
         plt.close(fg)
 

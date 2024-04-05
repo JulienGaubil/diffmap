@@ -13,9 +13,9 @@ T = TypeVar("T")
 
 class Extrinsics(nn.Module, ABC, Generic[T]):
     cfg: T
-    num_frames: int
+    num_frames: int | None
 
-    def __init__(self, cfg: T, num_frames: int) -> None:
+    def __init__(self, cfg: T, num_frames: int | None) -> None:
         super().__init__()
         self.cfg = cfg
         self.num_frames = num_frames

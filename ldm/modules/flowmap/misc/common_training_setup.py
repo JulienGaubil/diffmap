@@ -37,6 +37,7 @@ def run_common_training_setup(
         output_dir = Path(
             hydra.core.hydra_config.HydraConfig.get()["runtime"]["output_dir"]
         )
+        output_dir = output_dir / cfg.wandb.name
         logger = WandbLogger(
             project=cfg.wandb.project,
             name=cfg.wandb.name,

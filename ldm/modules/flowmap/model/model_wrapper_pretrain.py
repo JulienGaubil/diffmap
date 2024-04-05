@@ -56,6 +56,7 @@ class ModelWrapperPretrain(LightningModule):
     @torch.no_grad()
     def preprocess_batch(self, batch_dict: dict) -> tuple[Batch, Flows]:
         # Convert the batch from an untyped dict to a typed dataclass.
+        batch_dict.pop("frame_paths", None)
         batch = Batch(**batch_dict)
 
         # Compute optical flow and tracks.

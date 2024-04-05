@@ -37,6 +37,7 @@ class DatasetCO3DCfg(DatasetCfgCommon):
     set_list: str
     categories: list[str] | None
     load_cameras: bool
+    load_frame_paths: bool
 
 
 class DatasetCO3D(Dataset):
@@ -242,9 +243,10 @@ class DatasetCO3D(Dataset):
         example = [self.read_image(sequence, index.item()) for index in indices]
         example = default_collate(example)
 
+        extra = ("frame_paths",) if self.cfg.load_frame_paths else ()
         result = {
             k: example[k]
-            for k in ("videos", "indices", "extrinsics", "intrinsics", "frame_paths")
+            for k in ("videos", "indices", "extrinsics", "intrinsics", *extra)
             if k in example
         }
         result["scenes"] = f"{sequence.category}/{sequence.name}"
