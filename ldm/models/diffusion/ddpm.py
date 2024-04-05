@@ -737,7 +737,7 @@ class LatentDiffusion(DDPM):
 
     @torch.no_grad()
     def get_input(self, batch, k, return_first_stage_outputs=False, force_c_encode=False,
-                  cond_key=None, return_original_cond=False, bs=None, return_x=False):
+                  cond_key=None, return_original_cond=False , bs=None, return_x=False):
         '''
         Returns the inputs and outputs required for a diffusion sampling process and to supervise the model.
         Inputs:
@@ -788,6 +788,11 @@ class LatentDiffusion(DDPM):
                 ckey = __conditioning_keys__[self.model.conditioning_key]
                 c = {ckey: c, 'pos_x': pos_x, 'pos_y': pos_y}
 
+            if self.model.conditioning_key == "hybrid":
+                xc = xc.to(self.device)
+                encoder_posterior_c = self.encode_first_stage(xc)  #encode image contexte, latent
+                zc = self.get_first_stage_encoding(encoder_posterior_c).detach()
+                c = {'c_concat':[zc], 'c_crossattn':[c]} #latent encoding and CLIP encoding for hybrid conditioning
         else: #no conditioning in this case
             c = None
             xc = None
@@ -942,7 +947,7 @@ class LatentDiffusion(DDPM):
             pass
         else:
             if not isinstance(cond, list):
-                cond = [cond]
+                cond = [cond]            
             key = 'c_concat' if self.model.conditioning_key == 'concat' else 'c_crossattn'
             cond = {key: cond}
 
@@ -1339,6 +1344,8 @@ class LatentDiffusion(DDPM):
                                            force_c_encode=True,
                                            return_original_cond=True,
                                            bs=N)
+        
+        
         N = min(x.shape[0], N)
         n_row = min(x.shape[0], n_row)
         log["inputs"] = x #target image x_0
@@ -1346,7 +1353,10 @@ class LatentDiffusion(DDPM):
         #gets conditioning image
         if self.model.conditioning_key is not None:
             if hasattr(self.cond_stage_model, "decode"):
-                xc = self.cond_stage_model.decode(c)
+                if self.model.conditioning_key == "hybrid":
+                    xc = self.cond_stage_model.decode(c['c_crossattn'][0])
+                else:
+                    xc = self.cond_stage_model.decode(c)
                 log["conditioning"] = xc
             elif self.cond_stage_key in ["caption", "txt"]:
                 xc = log_txt_as_img((x.shape[2], x.shape[3]), batch[self.cond_stage_key], size=x.shape[2]//25)
@@ -2198,6 +2208,17 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
                 pos_x, pos_y = self.compute_latent_shifts(batch)
                 ckey = __conditioning_keys__[self.model.conditioning_key]
                 c = {ckey: c, 'pos_x': pos_x, 'pos_y': pos_y}
+            
+            if self.model.conditioning_key == "hybrid":
+                xc = xc.to(self.device)
+                if self.cond_stage_key != "optical_flow":
+                    encoder_posterior_c = self.encode_first_stage(xc)  #encode image contexte, latent
+                    zc = self.get_first_stage_encoding(encoder_posterior_c).detach()
+                else:
+                    # TODO faire proprement
+                    encoder_posterior_c = self.first_stage_model_flow.encode(xc)
+                    zc = self.scale_factor * encoder_posterior.sample()
+                c = {'c_concat':[zc], 'c_crossattn':[c]} #latent encoding and CLIP encoding for hybrid conditioning
 
         else: #no conditioning in this case
             c = None
@@ -2314,14 +2335,16 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
                                            force_c_encode=True,
                                            return_original_cond=True,
                                            bs=N)
-
         N = min(x.shape[0], N)
         n_row = min(x.shape[0], n_row)
         
         #gets conditioning image
         if self.model.conditioning_key is not None:
             if hasattr(self.cond_stage_model, "decode"):
-                xc = self.cond_stage_model.decode(c)
+                if self.model.conditioning_key == "hybrid":
+                    xc = self.cond_stage_model.decode(c['c_crossattn'][0])
+                else:
+                    xc = self.cond_stage_model.decode(c)
                 log["conditioning"] = xc
             elif self.cond_stage_key in ["caption", "txt"]:
                 xc = log_txt_as_img((x.shape[2], x.shape[3]), batch[self.cond_stage_key], size=x.shape[2]//25)
@@ -2341,9 +2364,22 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
                                                             ddim_steps=ddim_steps,eta=ddim_eta) #samples generative process in latent space
                     # samples, z_denoise_row = self.sample(cond=c, batch_size=N, return_intermediates=True)
 
-        #sampling with classifier free guidance
-        if unconditional_guidance_scale > 1.0:
+        #sampling with classifier free guidance, not implemented for hybrid
+        if unconditional_guidance_scale > 1.0 and self.model.conditioning_key != "hybrid":
             uc = self.get_unconditional_conditioning(N, unconditional_guidance_label)
+            # if self.model.conditioning_key == "hybrid":
+            #     x_uc =  self.cond_stage_model.decode(uc).to(self.device)
+            #     if self.cond_stage_key != "optical_flow":
+            #         encoder_posterior_uc = self.encode_first_stage(x_uc)  #encode image contexte, latent
+            #         z_uc = self.get_first_stage_encoding(encoder_posterior_uc).detach()
+            #     else:
+            #         # TODO faire proprement
+            #         encoder_posterior_uc = self.first_stage_model_flow.encode(x_uc)
+            #         z_uc = self.scale_factor * encoder_posterior_uc.sample()
+                
+            #     uc = {'c_concat': [z_uc],
+            #           'c_crossattn': [uc],
+            #     }
             # uc = torch.zeros_like(c)
             with ema_scope("Sampling with classifier-free guidance"):
                 samples_cfg, _ = self.sample_log(cond=c, batch_size=N, ddim=use_ddim,
@@ -2431,7 +2467,7 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
                     # x_samples = self.decode_first_stage(samples.to(self.device))
                     # log["samples_x0_quantized"] = x_samples
 
-            if unconditional_guidance_scale > 1.0: #sampling with classifier free guidance
+            if unconditional_guidance_scale > 1.0 and self.model.conditioning_key != "hybrid": #sampling with classifier free guidance
                 samples_cfg_m = samples_cfg[: , k*4:(k+1)*4, ...]
                 if modality != "optical_flow":
                     x_samples_cfg = self.decode_first_stage(samples_cfg_m)
@@ -2462,10 +2498,18 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
                 return {modality:{key: log[key] for key in return_keys} for modality in self.modalities}
         return log
     
+<<<<<<< HEAD
     def shared_step(self, batch, **kwargs):
         z, c, flows, flows_masks, correspondence_weights  = self.get_input(batch, self.first_stage_key, return_flows_depths=True)
         loss = self(z, c, flows, flows_masks, correspondence_weights)
         return loss
+=======
+    def p_losses(self, x_start, cond, t, noise=None):
+        noise = default(noise, lambda: torch.randn_like(x_start))
+        x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
+        model_output = self.apply_model(x_noisy, t, cond)
+
+>>>>>>> cond_concat
 
     def forward(self, z, c, flows, flows_masks, correspondence_weights, *args, **kwargs):
         t = torch.randint(0, self.num_timesteps, (z.shape[0],), device=self.device).long()

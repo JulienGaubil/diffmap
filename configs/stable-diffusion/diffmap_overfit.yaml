@@ -37,7 +37,7 @@ model:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
         image_size: 32 # unused
-        in_channels: 8 #number of input channels U-Net, should be multiple of 4 (original size)
+        in_channels: 12 #number of input channels U-Net, should be multiple of 4 (original size)
         out_channels: 8 #number of output channels U-Net, should be multiple of 4 (original size)
         model_channels: 320
         attention_resolutions: [ 4, 2, 1 ]
