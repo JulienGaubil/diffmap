@@ -158,7 +158,7 @@ class DDPMDiffmap(DDPM):
         out = {m: split_all[m] for m in modalities}
         return out
 
-    def _get_denoise_row_from_list(self, samples, desc='', force_no_decoder_quantization=False):
+    def _get_denoise_row_from_list(self, samples, desc='', modality=None):
         denoise_row = []
         for zd in tqdm(samples, desc=desc):
             denoise_row.append(zd.to(self.device))
@@ -166,6 +166,8 @@ class DDPMDiffmap(DDPM):
         denoise_row = torch.stack(denoise_row)  # n_log_step, n_row, C, H, W
         denoise_grid = rearrange(denoise_row, 'n b c h w -> b n c h w')
         denoise_grid = rearrange(denoise_grid, 'b n c h w -> (b n) c h w')
+        if modality in ['depth_ctxt', 'depth_trgt']:
+            denoise_grid = self.to_depth(denoise_grid)
         denoise_grid = make_grid(denoise_grid, nrow=n_imgs_per_row)
         return denoise_grid
 
@@ -267,17 +269,13 @@ class DDPMDiffmap(DDPM):
         ) -> tuple[dict[str, Tensor], dict[str, Tensor], Float[Tensor, "batch frame height width"]]:
         # Prepare depth, should be (batch frame height width).
         correspondence_weights = correspondence_weights[:, None, :, :]
-        depths_recon = torch.stack([
-            x_recon_flowmap["depth_ctxt"].mean(1),
-            x_recon_flowmap["depth_trgt"].mean(1)
+        # Compute depth with exponential mapping.
+        depths_recon = torch.cat([
+            self.to_depth(x_recon_flowmap["depth_ctxt"]),
+            self.to_depth(x_recon_flowmap["depth_trgt"])
             ],
             dim=1
         )
-        # Normalize the depth with min - max.
-        near = depths_recon.min()
-        far = depths_recon.max()
-        depths_recon = (depths_recon - near) / (far - near)
-        depths_recon = depths_recon.clip(min=0, max=1)
 
         # Prepare flow
         # flows_recon = rearrange(x_recon_flowmap["optical_flow"][:, None, :2, :, :], 'b f xy w h -> b f w h xy') #estimated clean forward flow, TODO, should be (batch pair height width 2)
@@ -689,6 +687,10 @@ class DDPMDiffmap(DDPM):
         x = nn.functional.conv2d(x, weight=self.colorize)
         x = 2. * (x - x.min()) / (x.max() - x.min()) - 1.
         return x
+
+    def to_depth(self, x: Float[Tensor, "batch 3 height width"]) -> Float[Tensor, "batch 1 height width"]:
+        depths = x.mean(1, keepdims=True)
+        return (depths / 1000).exp() + 0.01
     
     @torch.no_grad()
     def log_images(self, batch, N=8, n_row=4, sample=True, ddim_steps=200, ddim_eta=1., return_keys=None,
@@ -793,8 +795,10 @@ class DDPMDiffmap(DDPM):
             
             if sample: #sampling of the conditional diffusion model with DDIM for accelerated inference without logging intermediates
                 x_samples = samples[:, k*3:(k+1)*3,...]
-                if modality != "optical_flow":
-                    log[modality]["correspondence_weights"] = repeat(batch["correspondence_weights"], "b h w -> b c h w", c=3)
+                if modality in ['depth_trgt', 'depth_ctxt']:
+                    x_samples = self.to_depth(x_samples)
+                    if modality == 'depth_trgt': # TODO properly load correspondence weights
+                        log[modality]["correspondence_weights"] = batch["correspondence_weights"]
 
                 log[modality]["samples"] = x_samples
                 if plot_denoise_rows:
@@ -803,6 +807,8 @@ class DDPMDiffmap(DDPM):
 
             if unconditional_guidance_scale > 1.0 and self.model.conditioning_key not in ["concat", "hybrid"]: #sampling with classifier free guidance
                 x_samples_cfg = samples_cfg[: , k*3:(k+1)*3, ...]
+                if modality in ['depth_trgt', 'depth_ctxt']:
+                    x_samples_cfg = self.to_depth(x_samples_cfg)
                 log[modality][f"samples_cfg_scale_{unconditional_guidance_scale:.2f}"] = x_samples_cfg
 
             if inpaint:

@@ -20,6 +20,8 @@ from pytorch_lightning.utilities import rank_zero_info
 from ldm.data.base import Txt2ImgIterableBaseDataset
 from ldm.util import instantiate_from_config
 from flow_vis_torch import flow_to_color
+from ldm.modules.flowmap.visualization.depth import color_map_depth
+from ldm.modules.flowmap.visualization.color import apply_color_map_to_image
 
 
 
@@ -480,16 +482,22 @@ class ImageLoggerDiffmap(ImageLogger):
                     images_m[k] = images_m[k][:N].clone()
                     if isinstance(images_m[k], torch.Tensor):
                         images_m[k] = images_m[k].detach().cpu()
-                        if self.clamp:
+                        if self.clamp and modality not in ["depth_trgt", "depth_ctxt"]:
                             images_m[k] = torch.clamp(images_m[k], -1., 1.)
                     if modality == "optical_flow":
-                        images_m[k] = (flow_to_color(images_m[k][:,:2,:,:]) / 255)
+                        if k in ['inputs', 'samples']:
+                            images_m[k] = (flow_to_color(images_m[k][:,:2,:,:]) / 255)
                     elif modality in ["depth_trgt", "depth_ctxt"]:
-                        depth_map = images_m[k].mean(1) #averages prediction across three channels
-                        depth_map = (depth_map + 1)/2 #brings back in [0,1]
-                        depth_rgb = torch.stack([depth_map]*3, dim=1)
-                        images_m[k] = depth_rgb
-
+                        # TODO do it properly, remove correspondence weights from here
+                        if k == 'samples':
+                            images_m[k] = color_map_depth(images_m[k].squeeze(1))
+                        elif k == 'inputs':
+                            # depth_map = images_m[k].mean(1) #averages prediction across three channels
+                            # depth_map = (depth_map + 1)/2 #brings back in [0,1]
+                            # images_m[k] = color_map_depth(depth_map)
+                            images_m[k] = (images_m[k] + 1) /2
+                        elif k == 'correspondence_weights':
+                            images_m[k] = apply_color_map_to_image(images_m[k], "gray")
 
                 self.log_local(pl_module.logger.save_dir, split_m, images_m,
                             pl_module.global_step, pl_module.current_epoch, batch_idx)
