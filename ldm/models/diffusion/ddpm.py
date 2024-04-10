@@ -181,10 +181,11 @@ class DDPM(pl.LightningModule):
             lvlb_weights = 0.5 * np.sqrt(torch.Tensor(alphas_cumprod)) / (2. * 1 - torch.Tensor(alphas_cumprod))
         else:
             raise NotImplementedError("mu not supported")
-        # TODO how to choose this term
-        lvlb_weights[0] = lvlb_weights[1]
-        self.register_buffer('lvlb_weights', lvlb_weights, persistent=False)
-        assert not torch.isnan(self.lvlb_weights).all()
+        if self.num_timesteps >1:
+            # TODO how to choose this term
+            lvlb_weights[0] = lvlb_weights[1]
+            self.register_buffer('lvlb_weights', lvlb_weights, persistent=False)
+            assert not torch.isnan(self.lvlb_weights).all()
 
     @contextmanager
     def ema_scope(self, context=None):
@@ -1515,7 +1516,6 @@ class DiffusionWrapper(pl.LightningModule):
         self.diffusion_model = instantiate_from_config(diff_model_config) # U-Net
         self.conditioning_key = conditioning_key
         assert self.conditioning_key in [None, 'concat', 'crossattn', 'hybrid', 'adm', 'hybrid-adm']
-
     def forward(self, x, t, c_concat: list = None, c_crossattn: list = None, c_adm=None):
         if self.conditioning_key is None:
             out = self.diffusion_model(x, t)

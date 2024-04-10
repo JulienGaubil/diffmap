@@ -5,6 +5,8 @@ __conditioning_keys__ = {'concat': 'c_concat',
                          'adm': 'y'}
 
 
+from torchvision.utils import save_image
+
 class DDPMDiffmap(DDPM):
     """main class"""
     def __init__(self,
@@ -219,7 +221,7 @@ class DDPMDiffmap(DDPM):
                 xc = x
 
             #encodes conditioning image with feature encoder (eg CLIP)
-            if not self.cond_stage_trainable or force_c_encode:
+            if (not self.cond_stage_trainable or force_c_encode) and self.model.conditioning_key != "concat":
                 if isinstance(xc, dict) or isinstance(xc, list):
                     c = self.get_learned_conditioning(xc)
                 else:
@@ -263,7 +265,7 @@ class DDPMDiffmap(DDPM):
             flows_masks: dict[str, Float[Tensor, "batch height width"]],
             correspondence_weights: Float[Tensor, "batch height width"]
         ) -> tuple[dict[str, Tensor], dict[str, Tensor], Float[Tensor, "batch frame height width"]]:
-        # Prepare depth, should be (batch frame height width)
+        # Prepare depth, should be (batch frame height width).
         correspondence_weights = correspondence_weights[:, None, :, :]
         depths_recon = torch.stack([
             x_recon_flowmap["depth_ctxt"].mean(1),
@@ -271,7 +273,7 @@ class DDPMDiffmap(DDPM):
             ],
             dim=1
         )
-        # Normalize the depth
+        # Normalize the depth with min - max.
         near = depths_recon.min()
         far = depths_recon.max()
         depths_recon = (depths_recon - near) / (far - near)
@@ -696,7 +698,7 @@ class DDPMDiffmap(DDPM):
         Performs diffusion forward and backward process on a given batch and returns logs for tensorboard
         '''
         ema_scope = self.ema_scope if use_ema_scope else nullcontext
-        use_ddim = ddim_steps is not None
+        use_ddim = ddim_steps is not None and self.num_timesteps > 1
 
         log = dict()
         x, c, xc = self.get_input(batch, self.first_stage_key,
@@ -731,7 +733,7 @@ class DDPMDiffmap(DDPM):
                     # samples, z_denoise_row = self.sample(cond=c, batch_size=N, return_intermediates=True)
 
         #sampling with classifier free guidance
-        if unconditional_guidance_scale > 1.0:
+        if unconditional_guidance_scale > 1.0 and self.model.conditioning_key not in ["concat", "hybrid"]:
             uc = self.get_unconditional_conditioning(N, unconditional_guidance_label)
             # uc = torch.zeros_like(c)
             with ema_scope("Sampling with classifier-free guidance"):
@@ -799,7 +801,7 @@ class DDPMDiffmap(DDPM):
                     denoise_grid = self._get_denoise_row_from_list(x_denoise_row, modality=modality) #a remplacer avec flow
                     log[modality]["denoise_row"] = denoise_grid
 
-            if unconditional_guidance_scale > 1.0: #sampling with classifier free guidance
+            if unconditional_guidance_scale > 1.0 and self.model.conditioning_key not in ["concat", "hybrid"]: #sampling with classifier free guidance
                 x_samples_cfg = samples_cfg[: , k*3:(k+1)*3, ...]
                 log[modality][f"samples_cfg_scale_{unconditional_guidance_scale:.2f}"] = x_samples_cfg
 
