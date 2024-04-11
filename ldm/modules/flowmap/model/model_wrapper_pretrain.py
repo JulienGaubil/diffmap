@@ -141,7 +141,7 @@ class FlowmapLossWrapper(nn.Module):
     # @torch.no_grad()
     def preprocess_inputs(self,
             batch_dict: dict,
-            flows: dict,
+            flows: Flows,
             depths: Float[Tensor, "batch pair frame height width"],
         ) -> tuple[Batch, Flows, Float[Tensor, "batch frame height_scaled width_scaled"]]:
         # Convert the batch from an untyped dict to a typed dataclass.
@@ -151,7 +151,7 @@ class FlowmapLossWrapper(nn.Module):
         assert f==2, "Flowmap loss only for pairs of images"
         
         # Create flow structures
-        flows = Flows(**flows)
+        # flows = Flows(**flows)
         # flows.forward = self.flow_predictor.rescale_flow(flows.forward, (h,w)) #(batch, pair=1, height_scaled, width_scaled, 2)
         # flows.backward = self.flow_predictor.rescale_flow(flows.backward, (h,w)) #(batch, pair=1, height_scaled, width_scaled, 2)
         # flows.forward_mask = self.flow_predictor.rescale_mask(flows.forward_mask, (h,w)) #(batch, pair=1, height_scaled, width_scaled)
@@ -167,7 +167,7 @@ class FlowmapLossWrapper(nn.Module):
     def forward(
             self,
             batch: dict,
-            flows: dict,
+            flows: Flows,
             depths: Float[Tensor, "batch frame height width"],
             correspondence_weights: Float[Tensor, "batch frame-1 height width"],
             global_step: int,

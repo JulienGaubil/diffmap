@@ -85,6 +85,7 @@ class DDPM(pl.LightningModule):
                  logvar_init=0.,
                  make_it_fit=False,
                  ucg_training=None,
+                 model=None
                  ):
         super().__init__()
         assert parameterization in ["eps", "x0"], 'currently only supporting "eps" and "x0"'
@@ -97,7 +98,11 @@ class DDPM(pl.LightningModule):
         self.image_size = image_size  # try conv?
         self.channels = channels
         self.use_positional_encodings = use_positional_encodings
-        self.model = DiffusionWrapper(unet_config, conditioning_key) #U-Net
+
+        if model is not None:
+            self.model = model
+        else:
+            self.model = DiffusionWrapper(unet_config, conditioning_key) #U-Net
         count_params(self.model, verbose=True)
         self.use_ema = use_ema
         if self.use_ema:

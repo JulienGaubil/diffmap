@@ -473,8 +473,7 @@ class ImageLoggerDiffmap(ImageLogger):
                 images = pl_module.log_images(batch, split=split, **self.log_images_kwargs)
 
             #logs every modality
-            for i in range(len(pl_module.modalities)):
-                modality = pl_module.modalities[i]
+            for modality in images.keys():
                 split_m = split+f"_{modality}"
                 images_m = images[modality]
                 for k in images_m:
@@ -492,9 +491,6 @@ class ImageLoggerDiffmap(ImageLogger):
                         if k == 'samples':
                             images_m[k] = color_map_depth(images_m[k].squeeze(1))
                         elif k == 'inputs':
-                            # depth_map = images_m[k].mean(1) #averages prediction across three channels
-                            # depth_map = (depth_map + 1)/2 #brings back in [0,1]
-                            # images_m[k] = color_map_depth(depth_map)
                             images_m[k] = (images_m[k] + 1) /2
                         elif k == 'correspondence_weights':
                             images_m[k] = apply_color_map_to_image(images_m[k], "gray")

@@ -8,17 +8,21 @@ model:
     log_every_t: 200 #when logging generated samples, frequency of logging for intermediate samples  
     timesteps: 1000 #sampling timesteps in forward/backward
     first_stage_key: "trgt" #key in batch for the noised signal
-    cond_stage_key: "ctxt" #key in batch for the clean conditioning signal
+    cond_stage_key: "ctxt" #key in batch for conditioning signal
     image_size: 64 #2D resolution in the latent space, also controls sampling resolution (x8)
-    channels: 6 #number of channels in latent space
+    channels: 0 #number of noisy image channels as input of U-Net
     cond_stage_trainable: false   # Note: different from the one we trained before
     conditioning_key: concat #defines the type of conditioning ie (crossattn, concat, hybrid)
     monitor: null
-    parameterization: eps
+    parameterization: x0
     unet_trainable: all  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn)
-    modalities:
+    compute_weights: true
+    modalities_in: []
     # - trgt
     # - optical_flow
+    # - depth_trgt
+    # - depth_ctxt
+    modalities_out: 
     - depth_trgt
     - depth_ctxt
     ckpt_path: null
@@ -35,11 +39,11 @@ model:
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
-        image_size: 32 # unused
-        in_channels: 9 #number of input channels U-Net, should be multiple of 4 (original size)
+        image_size: 64 # unused
+        in_channels: 3 #number of input channels U-Net, should be multiple of 4 (original size)
         out_channels: 6 #number of output channels U-Net, should be multiple of 4 (original size)
         model_channels: 320
-        attention_resolutions: [ 4, 2, 1 ]
+        attention_resolutions: [ 4, 2, 1]
         num_res_blocks: 2
         channel_mult: [ 1, 2, 4, 4 ]
         num_heads: 8
