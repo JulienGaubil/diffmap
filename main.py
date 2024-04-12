@@ -481,7 +481,7 @@ class ImageLoggerDiffmap(ImageLogger):
                     images_m[k] = images_m[k][:N].clone()
                     if isinstance(images_m[k], torch.Tensor):
                         images_m[k] = images_m[k].detach().cpu()
-                        if self.clamp and modality not in ["depth_trgt", "depth_ctxt"]:
+                        if self.clamp and modality not in ["depth_trgt", "depth_ctxt", "optical_flow"]:
                             images_m[k] = torch.clamp(images_m[k], -1., 1.)
                     if modality == "optical_flow":
                         if k in ['inputs', 'samples']:
