@@ -10,19 +10,21 @@ model:
     first_stage_key: "trgt" #key in batch for the noised signal
     cond_stage_key: "ctxt" #key in batch for conditioning signal
     image_size: 64 #2D resolution in the latent space, also controls sampling resolution (x8)
-    channels: 0 #number of noisy image channels as input of U-Net
+    channels: 6 #number of noisy channels as input of U-Net
     cond_stage_trainable: false   # Note: different from the one we trained before
     conditioning_key: concat #defines the type of conditioning ie (crossattn, concat, hybrid)
     monitor: null
-    parameterization: x0
+    parameterization: eps
     unet_trainable: all  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn)
     compute_weights: true
-    modalities_in: []
-    # - trgt
-    # - optical_flow
+    modalities_in: #diffusion modalities
+    - trgt
+    - optical_flow
     # - depth_trgt
     # - depth_ctxt
-    modalities_out: 
+    modalities_out: #modalities as output of the U-Net
+    - trgt
+    - optical_flow
     - depth_trgt
     - depth_ctxt
     ckpt_path: null
@@ -40,8 +42,8 @@ model:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
         image_size: 64 # unused
-        in_channels: 3 #number of input channels U-Net, should be multiple of 4 (original size)
-        out_channels: 6 #number of output channels U-Net, should be multiple of 4 (original size)
+        in_channels: 9 #number of input channels U-Net, should be multiple of 4 (original size)
+        out_channels: 12 #number of output channels U-Net, should be multiple of 4 (original size)
         model_channels: 320
         attention_resolutions: [ 4, 2, 1]
         num_res_blocks: 2
@@ -132,7 +134,7 @@ data:
             size: 64
 
 lightning:
-  find_unused_parameters: false
+  find_unused_parameters: true
   modelcheckpoint:
     params:
       every_n_train_steps: 1000
@@ -161,5 +163,5 @@ lightning:
     limit_val_batches: 0.0  # to disable validation
     num_sanity_val_steps: 0
     accumulate_grad_batches: 4
-    max_epochs: 1000 #max number of epochs performed, 1000 is the default
+    max_epochs: 2000 #max number of epochs performed, 1000 is the default
     max_steps: 15000  #max number of iterations performed, 1000 is the default

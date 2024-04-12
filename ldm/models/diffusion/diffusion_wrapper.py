@@ -1,43 +1,20 @@
 import torch
 import torch.nn as nn
-import numpy as np
 import pytorch_lightning as pl
-from torch.optim.lr_scheduler import LambdaLR
-from einops import rearrange, repeat
-from contextlib import contextmanager, nullcontext
-from functools import partial
-import itertools
-from tqdm import tqdm
-from torchvision.utils import make_grid
-from pytorch_lightning.utilities.distributed import rank_zero_only
-from omegaconf import ListConfig
-
-from ldm.util import log_txt_as_img, exists, default, ismap, isimage, mean_flat, count_params, instantiate_from_config
-from ldm.modules.ema import LitEma
-from ldm.modules.distributions.distributions import normal_kl, DiagonalGaussianDistribution
-from ldm.models.autoencoder import VQModelInterface, IdentityFirstStage, AutoencoderKL
-from ldm.modules.diffusionmodules.util import make_beta_schedule, extract_into_tensor, noise_like
-from ldm.models.diffusion.ddim import DDIMSampler
-from ldm.modules.attention import CrossAttention
-
+from einops import rearrange
 from jaxtyping import Float, Int
 from torch import Tensor
-from ldm.modules.flowmap.model.model_wrapper_pretrain import FlowmapLossWrapper
-from ldm.modules.flowmap.config.common import get_typed_root_config_diffmap
-from ldm.modules.flowmap.config.pretrain import DiffmapCfg
-from ldm.modules.flowmap.loss import get_losses
-from ldm.modules.flowmap.model.model import FlowmapModelDiff
-from ldm.modules.flowmap.model.projection import earlier, later, sample_image_grid
-from ldm.modules.flowmap.model.backbone.backbone_midas import make_net
-from ldm.modules.flowmap.flow.flow_predictor import Flows
-
 from dataclasses import dataclass
+
+from ldm.util import instantiate_from_config
+from ldm.modules.flowmap.model.backbone.backbone_midas import make_net
 
 
 @dataclass
 class DiffusionOutput:
-    denoised: Float[Tensor, "batch channel height width"]
-    weights: Float[Tensor, "batch height width"] | None = None
+    diff_output: Float[Tensor, "batch channel_noisy height width"] # prediction for denoised modalities (x0 or eps depending on parameterization)
+    clean: Float[Tensor, "batch channel_clean height width"] # non-denoised modalities
+    weights: Float[Tensor, "batch pair=1 height width"] | None = None
 
 
 #Class wrapper du U-Net, appelle son forward pass dans forward
@@ -91,25 +68,22 @@ class DiffusionMapWrapper(pl.LightningModule, ):
             raise NotImplementedError()
 
         # Compute diffusion module output
-        b, _, h, w = features.size()
-        # out = rearrange(self.diff_out(features), "(b f) c h w -> b f c h w", b=b, f=1) # considers pairs of frames
-        out = self.diff_out(features)
-        
+        c_noisy = x.size(1)
+        diff_out = self.diff_out(features)
+        c_clean =  diff_out.size(1) - c_noisy
+        denoised, clean = diff_out.split([c_noisy, c_clean], dim=1)
+        out = DiffusionOutput(denoised, clean)
+
         # Compute correspondence weights. 
         if self.compute_weights:
-            backward_weights = self.compute_correspondence_weights(features)
-            return DiffusionOutput(out, backward_weights.squeeze(1))
-        else:
-            return DiffusionOutput(out)
-
+            out.weights = self.compute_correspondence_weights(features)
+        return out
+    
     def compute_correspondence_weights(
         self,
         features: Float[Tensor, "batch channel height width"],
     ) -> Float[Tensor, "batch frame=1 height width"]:
-        b, _, h, w = features.size()
+        b = features.size(0)
         features = rearrange(features, "(b f) c h w -> b f h w c", b=b, f=1) # considers pairs of frames
-        # print('SIZE FEATURES WEIGHTS : ', features.size())
-        # print('WEIGHTS MODEL : ')
-        # print(self.corr_weighter_perpoint)
         weights = self.corr_weighter_perpoint(features).sigmoid().clip(min=1e-4)
         return rearrange(weights, "b f h w () -> b f h w")

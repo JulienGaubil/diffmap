@@ -2,33 +2,12 @@ from .ddpm import *
 from .diffusion_wrapper import DiffusionMapWrapper
 
 from ldm.modules.flowmap.flow import Flows
-from .diffusion_wrapper import DiffusionOutput
+from ldm.models.diffusion.ddim import DDIMSamplerDiffmap
+from ldm.models.diffusion.types import Sample, DiffusionOutput
 
 __conditioning_keys__ = {'concat': 'c_concat',
                          'crossattn': 'c_crossattn',
                          'adm': 'y'}
-
-
-from torchvision.utils import save_image
-
-
-from dataclasses import dataclass
-
-
-@dataclass
-class SamplingOutput:
-    denoised: Float[Tensor, "batch frame-1 channel height width"]
-    t: int
-    clean: Float[Tensor, "batch frame-1 channel height width"] | None = None
-    weights: Float[Tensor, "batch frame-1 height width"] | None = None
-
-@dataclass
-class NoisyImages:
-    C: int #number of channels of an individual image
-    N: int #number of concatenated noisy images
-    image_shape: tuple[int, int] #image shapes
-    x_noisy: Float[Tensor, "batch channel=N*C height=image_shape[0] width=image_shape[1]"]
-
 
 
 class DDPMDiffmap(DDPM):
@@ -181,18 +160,17 @@ class DDPMDiffmap(DDPM):
             return [opt], scheduler
         return opt
     
-    def split_modalities_output(
+    def split_modalities(
             self,
             x: Float[Tensor, "_ 3*C _ _"],
+            modalities: list[str],
             C: int = None,
-            modalities: list[str] | None = None
         ) -> dict[str, Float[Tensor, "_ C _ _"]]:
         # Splits input tensor along every modality of chunk size C
         C = default(C, self.channels_m)
-        modalities = default(modalities, self.modalities_out)
-        split_all = dict(zip(self.modalities_out, torch.split(x, C, dim=1)))
-        out = {m: split_all[m] for m in modalities}
-        return out
+        assert C*len(modalities) == x.size(1), f"Tried splitting a tensor along dim 1 of size {x.size(1)} in {len(modalities)} chunks of size {C}"
+        
+        return dict(zip(modalities, torch.split(x, C, dim=1)))
 
     def _get_denoise_row_from_list(self, samples, desc='', modality=None):
         denoise_row = []
@@ -290,7 +268,7 @@ class DDPMDiffmap(DDPM):
         if return_flows_depths: #TODO properly handle modalities
             bs = default(bs, x.size(0))
             bs = min(bs, x.size(0))
-            correspondence_weights = batch['correspondence_weights'][:bs,:,:].to(self.device)
+            correspondence_weights = batch['correspondence_weights'][:bs,None,:,:].to(self.device)
             flows = Flows(**{
                 "forward": batch['optical_flow'][:bs, None, :, :, :2].to(self.device),
                 "backward":  batch['optical_flow_bwd'][:bs, None, :, :, :2].to(self.device),
@@ -305,16 +283,16 @@ class DDPMDiffmap(DDPM):
 
     def get_input_flowmap(
             self,
-            x_recon_flowmap: dict[str, Float[Tensor, "batch channels height width"]],
+            depths: dict[str, Float[Tensor, "batch channels height width"]],
             flows: Flows,
             correspondence_weights: Float[Tensor, "batch pair height width"]
         ) -> tuple[dict[str, Tensor], dict[str, Tensor], Float[Tensor, "batch frame height width"], Float[Tensor, "batch pair height width"]]:
         # Prepare depth, should be (batch frame height width).
-        correspondence_weights = correspondence_weights[:, None, :, :]
+        # correspondence_weights = correspondence_weights[:, None, :, :]
         # Compute depth with exponential mapping.
-        depths_recon = torch.cat([
-            self.to_depth(x_recon_flowmap["depth_ctxt"]),
-            self.to_depth(x_recon_flowmap["depth_trgt"])
+        depths = torch.cat([
+            self.to_depth(depths["depth_ctxt"]),
+            self.to_depth(depths["depth_trgt"])
             ],
             dim=1
         )
@@ -342,7 +320,7 @@ class DDPMDiffmap(DDPM):
             "datasets": [""],
         }
 
-        return dummy_flowmap_batch, flows, depths_recon, correspondence_weights
+        return dummy_flowmap_batch, flows, depths, correspondence_weights
 
     def shared_step(self, batch, **kwargs):
         x, c, flows, correspondence_weights  = self.get_input(batch, self.first_stage_key, return_flows_depths=True)
@@ -365,23 +343,24 @@ class DDPMDiffmap(DDPM):
         noise = default(noise, lambda: torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
 
-        # Computes model output and predicts clean x_0
+        # Compute model output and predicts clean x_0
         model_output = self.apply_model(x_noisy, t, cond) #prediction of x_0 or noise from x_t depending on the parameterization
         if self.parameterization == "x0":
-            target = x_start
-            x_recon = model_output.denoised
+            denoising_target = x_start
         elif self.parameterization == "eps":
-            target = noise
-            x_recon = self.predict_start_from_noise(x_noisy, t=t, noise=model_output.denoised) #x_0 estimated from the noise estimated and x_t:=x
+            denoising_target = noise
         else:
             raise NotImplementedError()
         
-        # Prepares flowmap inputs
-        x_recon_flowmap = self.split_modalities_output(x_recon, modalities=["depth_trgt", "depth_ctxt"])
-        correspondence_weights = default(model_output.weights, correspondence_weights)
-        dummy_flowmap_batch, flows, depths_recon, correspondence_weights = self.get_input_flowmap(x_recon_flowmap, flows, correspondence_weights)
+        # Prepare loss inputs.
+        use_flowmap_loss = model_output.clean.size(1) > 0
+        use_denoising_loss = model_output.diff_output.size(1) > 0
+        assert use_flowmap_loss or use_denoising_loss, "No loss is optimized"
+        if use_denoising_loss:
+            denoising_output = self.split_modalities(model_output.diff_output, self.modalities_in)
+            denoising_target = self.split_modalities(denoising_target, self.modalities_in)
 
-        #computes losses for every modality
+        # Compute losses for every modality.
         loss_dict = {}
         prefix = 'train' if self.training else 'val'        
         loss_simple, loss_gamma, loss, loss_vlb  = 0, 0, 0, 0
@@ -389,46 +368,50 @@ class DDPMDiffmap(DDPM):
         if self.learn_logvar:
             loss_dict.update({'logvar': self.logvar.data.mean()})
         
-        for k in range(len(self.modalities_out)):
-            modality = self.modalities_out[k]
+        for modality in self.modalities_out:
+            # Flowmap loss.
+            if modality ==  "depth_ctxt" and use_flowmap_loss:
+                # Prepare flowmap inputs.
+                depths = self.split_modalities(model_output.clean, ["depth_ctxt", "depth_trgt"])
+                correspondence_weights = default(model_output.weights, correspondence_weights)
+                dummy_flowmap_batch, flows, depths, correspondence_weights = self.get_input_flowmap(depths, flows, correspondence_weights)
 
-            if modality ==  "depth_ctxt": #flowmap loss
-                loss_flowmap = self.flowmap_loss_wrapper(dummy_flowmap_batch, flows, depths_recon, correspondence_weights, self.global_step)
+                # Compute flowmap loss.
+                loss_flowmap = self.flowmap_loss_wrapper(dummy_flowmap_batch, flows, depths, correspondence_weights, self.global_step)
                 loss_m = loss_flowmap
                 loss_dict.update({f'{prefix}_flowmap/loss': loss_flowmap.clone().detach()})
                 loss += loss_m
-            elif modality == "depth_trgt":
-                pass #TODO remove hack and properly handle modalities
-            else: #diffusion losses
+ 
+            elif modality == "depth_trgt": #TODO remove hack and properly handle modalities
                 pass
-                # loss_simple_m = self.get_loss(model_output[:, k*3:(k+1)*3, ...], target[:, k*3:(k+1)*3, ...], mean=False).mean([1, 2, 3])
-                # loss_simple += loss_simple_m
-                # loss_dict.update({f'{prefix}_{modality}/loss_simple': loss_simple_m.clone().detach().mean()})
+            elif use_denoising_loss:
+                # Compute diffusion loss.
+                loss_simple_m = self.get_loss(denoising_output[modality], denoising_target[modality], mean=False).mean([1, 2, 3])
+                loss_simple += loss_simple_m
+                loss_dict.update({f'{prefix}_{modality}/loss_simple': loss_simple_m.clone().detach().mean()})
 
-                # loss_gamma_m = loss_simple_m / torch.exp(logvar_t) + logvar_t
-                # if self.learn_logvar:
-                #     loss_dict.update({f'{prefix}_{modality}/loss_gamma': loss_gamma_m.mean()})
-                # loss_gamma += loss_gamma_m
+                loss_gamma_m = loss_simple_m / torch.exp(logvar_t) + logvar_t
+                if self.learn_logvar:
+                    loss_dict.update({f'{prefix}_{modality}/loss_gamma': loss_gamma_m.mean()})
+                loss_gamma += loss_gamma_m
 
-                # loss_vlb_m = self.get_loss(model_output[:, k*3:(k+1)*3, ...], target[:, k*3:(k+1)*3, ...], mean=False).mean(dim=(1, 2, 3))
-                # loss_vlb_m = (self.lvlb_weights[t] * loss_vlb_m).mean()
-                # loss_dict.update({f'{prefix}_{modality}/loss_vlb': loss_vlb_m})
-                # loss_vlb += loss_vlb_m
+                loss_vlb_m = self.get_loss(denoising_output[modality], denoising_target[modality], mean=False).mean(dim=(1, 2, 3))
+                loss_vlb_m = (self.lvlb_weights[t] * loss_vlb_m).mean()
+                loss_dict.update({f'{prefix}_{modality}/loss_vlb': loss_vlb_m})
+                loss_vlb += loss_vlb_m
 
-                # loss_m = self.l_simple_weight * loss_gamma_m.mean() + (self.original_elbo_weight * loss_vlb_m)
-                # loss_dict.update({f'{prefix}_{modality}/loss': loss_m})
+                loss_m = self.l_simple_weight * loss_gamma_m.mean() + (self.original_elbo_weight * loss_vlb_m)
+                loss_dict.update({f'{prefix}_{modality}/loss': loss_m})
 
-                # loss += loss_m
-
-        # loss_dict.update({f'{prefix}/loss_simple': loss_simple.mean()})
-        # if self.learn_logvar:
-        #     loss_dict.update({f'{prefix}/loss_gamma': loss_gamma.mean()})
-        # loss_dict.update({f'{prefix}/loss_vlb': loss_vlb})
-
+                loss += loss_m
         
-        # print("GRADIENTS convin_0 mean : ", gradients_convin0.mean())
-        # print("GRADIENTS convin_1 mean : ", gradients_convin1.mean())
-
+        # Log diffusion loss.
+        if use_denoising_loss:
+            loss_dict.update({f'{prefix}/loss_simple': loss_simple.mean()})
+            if self.learn_logvar:
+                loss_dict.update({f'{prefix}/loss_gamma': loss_gamma.mean()})
+            loss_dict.update({f'{prefix}/loss_vlb': loss_vlb})
+        # Log input / output layers gradients.
         if prefix == "train":
             try:
                 gradient_in = self.model.diffusion_model.input_blocks[0][0].weight._grad.abs().mean().clone().detach()
@@ -508,77 +491,103 @@ class DDPMDiffmap(DDPM):
         return mean_flat(kl_prior) / np.log(2.0)
 
     #estimates posterior q(x_{t-1}|x_t, x_0, c) mean and variance given x_t and conditioning c at step t
-    def p_mean_variance(self, x, c, t, clip_denoised: bool,
-                        return_x0=False, score_corrector=None, corrector_kwargs=None):
+    def p_mean_variance(self,
+                        samples: Sample,
+                        c,
+                        t: int,
+                        clip_denoised: bool,
+                        score_corrector=None,
+                        corrector_kwargs=None
+                        ) -> tuple[Float[Tensor, 'batch channel height width'],
+                                   Float[Tensor, 'batch channel height width'],
+                                   Float[Tensor, 'batch channel height width'],
+                                   Sample
+                        ]:
         t_in = t
+        x_noisy = samples.x_noisy
 
-        #estimates x_recon=:x_0 at step t from x_t and conditioning c
-        model_out = self.apply_model(x, t_in, c) # U-Net output
+        # Estimate x_recon=:x_0 at step t from x_noisy:=x_t and conditioning c.
+        model_output = self.apply_model(x_noisy, t_in, c) # U-Net output
+        diff_output = model_output.diff_output
         if score_corrector is not None:
             assert self.parameterization == "eps"
-            model_out.denoised = score_corrector.modify_score(self, model_out.denoised, x, t, c, **corrector_kwargs)
+            diff_output = score_corrector.modify_score(self, diff_output, x_noisy, t, c, **corrector_kwargs)
 
         if self.parameterization == "eps":
-            x_recon = self.predict_start_from_noise(x, t=t, noise=model_out.denoised)
+            x_recon = self.predict_start_from_noise(x_noisy, t=t, noise=diff_output)
         elif self.parameterization == "x0":
-            x_recon = model_out.denoised
+            x_recon = diff_output
         else:
             raise NotImplementedError()
-
         if clip_denoised:
             x_recon.clamp_(-1., 1.)
 
-        #estimates mean and variance at step t from x_t and estimated x_0
-        model_mean, posterior_variance, posterior_log_variance = self.q_posterior(x_start=x_recon, x_t=x, t=t)
-        if return_x0:
-            return model_mean, posterior_variance, posterior_log_variance, x_recon, model_out.weights
-        elif return_weights:
-            return model_mean, posterior_variance, posterior_log_variance, x_recon
-        else:
-            return model_mean, posterior_variance, posterior_log_variance
+        # Estimate mean and variance at step t from x_t and estimated x_0.
+        model_mean, posterior_variance, posterior_log_variance = self.q_posterior(x_start=x_recon, x_t=x_noisy, t=t)
+
+        # Update x0 estimate for this step.
+        samples.x_recon = x_recon
+
+        # Compute and store depths and weights.
+        if model_output.clean.size(1) > 0:
+            # TODO do it cleanly by handling modalities in a secure way
+            depths = self.split_modalities(model_output.clean, ["depth_ctxt", "depth_trgt"])
+            depths = torch.cat([
+                self.to_depth(depths["depth_ctxt"]),
+                self.to_depth(depths["depth_trgt"])
+                ],
+                dim=1
+            )
+            samples.depths = depths
+            samples.weights = model_output.weights
+
+        return model_mean, posterior_variance, posterior_log_variance, samples
 
     #takes x_t and conditioning c as input at step t, returns denoised x_{t-1}
     @torch.no_grad()
-    def p_sample(self, x, c, t, clip_denoised=False, repeat_noise=False, return_x0=False,
-                 temperature=1., noise_dropout=0., score_corrector=None, corrector_kwargs=None):
-        b, *_, device = *x.shape, x.device
-        outputs = self.p_mean_variance(x=x, c=c, t=t, clip_denoised=clip_denoised,
-                                       return_x0=return_x0,
+    def p_sample(self, samples: Sample, c, t, clip_denoised=False, repeat_noise=False,
+                 temperature=1., noise_dropout=0., score_corrector=None, corrector_kwargs=None
+                 ) -> Sample:
+        x_noisy = samples.x_noisy
+        b, *_, device = *x_noisy.shape, x_noisy.device
+        model_mean, _, model_log_variance, samples = self.p_mean_variance(samples=samples, c=c, t=t, clip_denoised=clip_denoised,
                                        score_corrector=score_corrector, corrector_kwargs=corrector_kwargs)
-        if return_x0:
-            model_mean, _, model_log_variance, x0, weights = outputs
-        else:
-            model_mean, _, model_log_variance = outputs
 
-        noise = noise_like(x.shape, device, repeat_noise) * temperature
+        noise = noise_like(x_noisy.shape, device, repeat_noise) * temperature
         if noise_dropout > 0.:
             noise = torch.nn.functional.dropout(noise, p=noise_dropout)
         # no noise when t == 0
-        nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x.shape) - 1)))
+        nonzero_mask = (1 - (t == 0).float()).reshape(b, *((1,) * (len(x_noisy.shape) - 1)))
 
-        #denoised x_{t-1} (step 4 sampling alg DDPM)
-        if return_x0:
-            return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise, x0, weights
-        else:
-            return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
+        # Denoise x_{t-1} sampled (step 4 sampling algo DDPM).
+        x_denoised = model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
+
+        # Update sample.
+        samples.x_noisy = x_denoised
+        samples.t = t
+        return samples
 
     #methode qui definit la MC pour sampler, legerement diff de p_sample_loop
     @torch.no_grad()
     def progressive_denoising(self, cond, shape, verbose=True, callback=None, img_callback=None, mask=None, x0=None, temperature=1., noise_dropout=0.,
                               score_corrector=None, corrector_kwargs=None, batch_size=None, x_T=None, start_T=None,
-                              log_every_t=None):
+                              log_every_t=None) -> tuple[Sample, list[Float[Tensor, '...']]]:
+        
+        # Prepare sampling initialization.
         if not log_every_t:
             log_every_t = self.log_every_t
         timesteps = self.num_timesteps
+        if start_T is not None:
+            timesteps = min(timesteps, start_T)
         if batch_size is not None:
             b = batch_size if batch_size is not None else shape[0]
             shape = [batch_size] + list(shape)
         else:
             b = batch_size = shape[0]
-        if x_T is None:
-            img = torch.randn(shape, device=self.device)
-        else:
-            img = x_T
+        
+        img = torch.randn(shape, device=self.device) if x_T is None else x_T
+        samples = Sample(**{"x_noisy": img, "t": timesteps})
+
         intermediates = []
         if cond is not None:
             if isinstance(cond, dict):
@@ -587,8 +596,6 @@ class DDPMDiffmap(DDPM):
             else:
                 cond = [c[:batch_size] for c in cond] if isinstance(cond, list) else cond[:batch_size]
 
-        if start_T is not None:
-            timesteps = min(timesteps, start_T)
         iterator = tqdm(reversed(range(0, timesteps)), desc='Progressive Generation',
                         total=timesteps) if verbose else reversed(
             range(0, timesteps))
@@ -603,80 +610,75 @@ class DDPMDiffmap(DDPM):
                 tc = self.cond_ids[ts].to(cond.device)
                 cond = self.q_sample(x_start=cond, t=tc, noise=torch.randn_like(cond))
 
-            img, x0_partial, _ = self.p_sample(img, cond, ts,
-                                            clip_denoised=self.clip_denoised, return_x0=True,
-                                            temperature=temperature[i], noise_dropout=noise_dropout,
+            samples = self.p_sample(samples, cond, ts,
+                                            clip_denoised=self.clip_denoised, temperature=temperature[i], noise_dropout=noise_dropout,
                                             score_corrector=score_corrector, corrector_kwargs=corrector_kwargs) #iteration, diff than for p_sample_loop
             if mask is not None:
                 assert x0 is not None
                 img_orig = self.q_sample(x0, ts)
-                img = img_orig * mask + (1. - mask) * img
+                samples.x_noisy = img_orig * mask + (1. - mask) * samples.x_noisy
 
             if i % log_every_t == 0 or i == timesteps - 1:
-                intermediates.append(x0_partial)
+                intermediates.append(samples.x_recon)
             if callback: callback(i)
-            if img_callback: img_callback(img, i)
-        return img, intermediates
+            if img_callback: img_callback(samples.x_noisy, i)
+        return samples, intermediates
 
     #samples Monte Carlo backward sampling chain
     @torch.no_grad()
     def p_sample_loop(self, cond, shape, return_intermediates=False,
                       x_T=None, verbose=True, callback=None, timesteps=None, mask=None,
-                      x0=None, img_callback=None, start_T=None, log_every_t=None):
+                      x0=None, img_callback=None, start_T=None, log_every_t=None) -> Sample | tuple[Sample, list[Float[Tensor, '...']]]:
 
         if not log_every_t:
             log_every_t = self.log_every_t
         device = self.betas.device
         b = shape[0]
-        if x_T is None:
-            img = torch.randn(shape, device=device)
-        else:
-            img = x_T
 
-        intermediates = [img]
-        if timesteps is None:
-            timesteps = self.num_timesteps
-
+        # Prepare sampling initialization.
+        img = torch.randn(shape, device=device) if x_T is None else x_T
+        timesteps = default(timesteps, self.num_timesteps)
         if start_T is not None:
             timesteps = min(timesteps, start_T)
-        iterator = tqdm(reversed(range(0, timesteps)), desc='Sampling t', total=timesteps) if verbose else reversed(
-            range(0, timesteps))
+        samples = Sample(**{"x_noisy": img, "t": timesteps})
+        intermediates = [img]
 
         if mask is not None:
             assert x0 is not None
             assert x0.shape[2:3] == mask.shape[2:3]  # spatial size has to match
 
-        #itere sur les timesteps en temps inverse
+        iterator = tqdm(reversed(range(0, timesteps)),desc='Sampling t', total=timesteps) if verbose\
+            else reversed(range(0, timesteps))
+        
+        # Monte-Carlo sampling by interating on inverse timesteps.
         for i in iterator:
             ts = torch.full((b,), i, device=device, dtype=torch.long)
+            # Forward process for conditioning if it is noised.
             if self.shorten_cond_schedule:
                 assert self.model.conditioning_key != 'hybrid'
                 tc = self.cond_ids[ts].to(cond.device)
-                cond = self.q_sample(x_start=cond, t=tc, noise=torch.randn_like(cond)) #~processus forward, noise conditionnement? pourquoi?
+                cond = self.q_sample(x_start=cond, t=tc, noise=torch.randn_like(cond))
 
-            if i > 0:
-                img = self.p_sample(img, cond, ts,
-                                clip_denoised=self.clip_denoised) #methode qui definit une iteration du sampling du DDPM
-            else: #last sampling step
-                img, x0_recon, weights = self.p_sample(img, cond, ts,
-                                clip_denoised=self.clip_denoised, return_x0=True) #methode qui definit une iteration du sampling du DDPM
+            # Samples x_{t-1} with a diffusion step.
+            samples = self.p_sample(samples, cond, ts,
+                                clip_denoised=self.clip_denoised)
             if mask is not None:
                 img_orig = self.q_sample(x0, ts)
-                img = img_orig * mask + (1. - mask) * img
+                samples.x_noisy = img_orig * mask + (1. - mask) * samples.x_noisy
 
             if i % log_every_t == 0 or i == timesteps - 1:
-                intermediates.append(img)
+                intermediates.append(samples.x_noisy)
             if callback: callback(i)
-            if img_callback: img_callback(img, i)
+            if img_callback: img_callback(samples.x_noisy, i)
 
         if return_intermediates:
-            return img, intermediates
-        return img
+            return samples, intermediates
+        return samples
 
     #methode pour sampler le DDPM, generation
     @torch.no_grad()
     def sample(self, cond, batch_size=16, return_intermediates=False, x_T=None,
-               verbose=True, timesteps=None, mask=None, x0=None, shape=None,**kwargs):
+               verbose=True, timesteps=None, mask=None, x0=None, shape=None,**kwargs) -> Sample:
         if shape is None:
             shape = (batch_size, self.channels, self.image_size, self.image_size)
         if cond is not None:
@@ -688,13 +690,13 @@ class DDPMDiffmap(DDPM):
         return self.p_sample_loop(cond,
                                   shape,
                                   return_intermediates=return_intermediates, x_T=x_T,
-                                  verbose=verbose, timesteps=timesteps, mask=mask, x0=x0) #methode qui definit la MC pour sampler
+                                  verbose=verbose, timesteps=timesteps, mask=mask, x0=x0) # Monte Carlo sampling for backward process
 
     @torch.no_grad()
-    def sample_log(self, cond, batch_size, ddim, ddim_steps, **kwargs):
+    def sample_log(self, cond, batch_size, ddim, ddim_steps, **kwargs) -> tuple[Sample, list[Float[Tensor, '...']]]:
         if len(self.modalities_in) > 0:
             if ddim:
-                ddim_sampler = DDIMSampler(self)
+                ddim_sampler = DDIMSamplerDiffmap(self)
                 shape = (self.channels, self.image_size, self.image_size)
                 samples, intermediates = ddim_sampler.sample(ddim_steps, batch_size,
                                                             shape, cond, verbose=False, **kwargs)
@@ -707,7 +709,15 @@ class DDPMDiffmap(DDPM):
             dummy_x_noisy = torch.zeros((b, 0, h, w), device=self.device)
             intermediates = torch.zeros((b, 0, h, w), device=self.device)
             t = torch.randint(0, self.num_timesteps, (cond.shape[0],), device=self.device).long()
-            samples = self.apply_model(dummy_x_noisy, t, cond) 
+            model_output = self.apply_model(dummy_x_noisy, t, cond)
+            depths = self.split_modalities(model_output.clean, ["depth_ctxt", "depth_trgt"])
+            depths = torch.cat([
+                self.to_depth(depths["depth_ctxt"]),
+                self.to_depth(depths["depth_trgt"])
+                ],
+                dim=1
+            )
+            samples = Sample(dummy_x_noisy, 0, x_recon=None, depths=depths, weights=model_output.weights)
 
         return samples, intermediates
 
@@ -751,12 +761,15 @@ class DDPMDiffmap(DDPM):
         '''
         ema_scope = self.ema_scope if use_ema_scope else nullcontext
         use_ddim = ddim_steps is not None and self.num_timesteps > 1
+        # use_ddim = False
 
+        # Prepare inputs
         log = dict()
         x, c, xc = self.get_input(batch, self.first_stage_key,
                                            force_c_encode=True,
                                            return_original_cond=True,
                                            bs=N)
+        x_split = self.split_modalities(x, self.modalities_in)
 
         N = min(x.shape[0], N)
         n_row = min(x.shape[0], n_row)
@@ -779,15 +792,14 @@ class DDPMDiffmap(DDPM):
                 log["conditioning"][self.model.conditioning_key] = self.to_rgb(xc)
 
         # Log input modalities.
-        for k in range(len(self.modalities_in)):
-            modality = self.modalities_in[k]
+        for modality in self.modalities_in:
             log[modality] = dict()
-            log[modality]["inputs"] = x[:, k*3:(k+1)*3,...]
+            log[modality]["inputs"] = x_split[modality]
 
             if plot_diffusion_rows: #computes steps of forward process and logs it
                 # get diffusion row
                 diffusion_row = list()
-                x_start = x[:n_row, k*3:(k+1)*3, ...]
+                x_start = x[modality][:n_row]
                 for t in range(self.num_timesteps):
                     if t % self.log_every_t == 0 or t == self.num_timesteps - 1:
                         t = repeat(torch.tensor([t]), '1 -> b', b=n_row)
@@ -808,8 +820,10 @@ class DDPMDiffmap(DDPM):
                     samples, x_denoise_row = self.sample_log(cond=c,batch_size=N,ddim=use_ddim,
                                                             ddim_steps=ddim_steps,eta=ddim_eta) #samples generative process in latent space
                     # samples, z_denoise_row = self.sample(cond=c, batch_size=N, return_intermediates=True)
-                weights = samples.weights
-                samples = self.split_modalities_output(samples.denoised)
+                weights = batch["correspondence_weights"].squeeze(1) if samples.weights is None else samples.weights.squeeze(1)
+                samples_diffusion = self.split_modalities(samples.x_noisy, self.modalities_in)
+                samples_depths = self.split_modalities(samples.depths, ['depth_ctxt', 'depth_trgt'], C=1) if samples.depths is not None else {}
+                samples = dict(samples_diffusion, **samples_depths)
 
         #sampling with classifier free guidance
         if unconditional_guidance_scale > 1.0 and self.model.conditioning_key not in ["concat", "hybrid"]:
@@ -821,7 +835,7 @@ class DDPMDiffmap(DDPM):
                                                  unconditional_guidance_scale=unconditional_guidance_scale,
                                                  unconditional_conditioning=uc,
                                 )
-                samples_cfg = self.split_modalities_output(samples_cfg)
+                samples_cfg = self.split_modalities(samples_cfg.x_noisy, self.modalities_in)
 
         if inpaint:
             # make a simple center square
@@ -834,32 +848,30 @@ class DDPMDiffmap(DDPM):
 
                 samples_inpaint, _ = self.sample_log(cond=c,batch_size=N,ddim=use_ddim, eta=ddim_eta,
                                             ddim_steps=ddim_steps, x0=x[:N], mask=mask)
+                samples_inpaint = samples_inpaint.x_noisy
                 
             # outpaint
             mask = 1. - mask
             with ema_scope("Plotting Outpaint"):
                 samples_outpaint, _ = self.sample_log(cond=c, batch_size=N, ddim=use_ddim,eta=ddim_eta,
                                             ddim_steps=ddim_steps, x0=x[:N], mask=mask)
+                samples_outpaint = samples_outpaint.x_noisy
         if plot_progressive_rows:
             with ema_scope("Plotting Progressives"):
-                img, progressives = self.progressive_denoising(c,
+                _, progressives = self.progressive_denoising(c,
                                                                shape=(self.channels, self.image_size, self.image_size),
                                                                batch_size=N)
-                progressives = [self.split_modalities_output(s) for s in progressives]
+                progressives = [self.split_modalities(s, self.modalities_in) for s in progressives]
 
         # Log outputs.
-        for k in range(len(self.modalities_out)):
-            modality = self.modalities_out[k]
+        for modality in self.modalities_out:
             if modality not in log.keys():
                 log[modality] = dict()
         
             if sample: #sampling of the conditional diffusion model with DDIM for accelerated inference without logging intermediates
                 x_samples = samples[modality]
-                if modality in ['depth_trgt', 'depth_ctxt']:
-                    x_samples = self.to_depth(x_samples)
-                    if modality == 'depth_trgt': # TODO properly load correspondence weights
-                        weights = default(weights, batch["correspondence_weights"])
-                        log[modality]["correspondence_weights"] = weights
+                if modality == 'depth_trgt':
+                    log[modality]["correspondence_weights"] = weights
 
                 log[modality]["samples"] = x_samples
                 if plot_denoise_rows and len(self.modalities_in) > 0:
@@ -868,8 +880,6 @@ class DDPMDiffmap(DDPM):
 
             if unconditional_guidance_scale > 1.0 and self.model.conditioning_key not in ["concat", "hybrid"]: #sampling with classifier free guidance
                 x_samples_cfg = samples_cfg[modality]
-                if modality in ['depth_trgt', 'depth_ctxt']:
-                    x_samples_cfg = self.to_depth(x_samples_cfg)
                 log[modality][f"samples_cfg_scale_{unconditional_guidance_scale:.2f}"] = x_samples_cfg
 
             if inpaint:
