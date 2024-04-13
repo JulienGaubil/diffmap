@@ -1,6 +1,6 @@
 model:
   base_learning_rate: 1.0e-04
-  target: ldm.models.diffusion.ddpm.FlowMapDiffusion
+  target: ldm.models.diffusion.ddpm_diffmap.DDPMDiffmap
   params:
     linear_start: 0.00085
     linear_end: 0.0120
@@ -8,18 +8,23 @@ model:
     log_every_t: 200 #when logging generated samples, frequency of logging for intermediate samples  
     timesteps: 1000 #sampling timesteps in forward/backward
     first_stage_key: "trgt" #key in batch for the noised signal
-    cond_stage_key: "ctxt" #key in batch for the clean conditioning signal
-    image_size: 16 #2D resolution in the latent space, also controls sampling resolution (x8)
-    channels: 8 #number of channels in latent space
+    cond_stage_key: "ctxt" #key in batch for conditioning signal
+    image_size: 64 #2D resolution in the latent space, also controls sampling resolution (x8)
+    channels: 6 #number of noisy channels as input of U-Net
     cond_stage_trainable: false   # Note: different from the one we trained before
-    conditioning_key: crossattn
+    conditioning_key: concat #defines the type of conditioning ie (crossattn, concat, hybrid)
     monitor: null
-    scale_factor: 0.18215
     parameterization: eps
-    unet_trainable: conv_io_attn  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn)
-    modalities:
-    # - trgt
-    # - optical_flow
+    unet_trainable: all  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn)
+    compute_weights: true
+    modalities_in: #diffusion modalities
+    - trgt
+    - optical_flow
+    # - depth_trgt
+    # - depth_ctxt
+    modalities_out: #modalities as output of the U-Net
+    - trgt
+    - optical_flow
     - depth_trgt
     - depth_ctxt
     ckpt_path: null
@@ -36,82 +41,26 @@ model:
     unet_config:
       target: ldm.modules.diffusionmodules.openaimodel.UNetModel
       params:
-        image_size: 32 # unused
-        in_channels: 12 #number of input channels U-Net, should be multiple of 4 (original size)
-        out_channels: 8 #number of output channels U-Net, should be multiple of 4 (original size)
+        image_size: 64 # unused
+        in_channels: 9 #number of input channels U-Net, should be multiple of 4 (original size)
+        out_channels: 12 #number of output channels U-Net, should be multiple of 4 (original size)
         model_channels: 320
-        attention_resolutions: [ 4, 2, 1 ]
+        attention_resolutions: [ 4, 2, 1]
         num_res_blocks: 2
         channel_mult: [ 1, 2, 4, 4 ]
         num_heads: 8
-        use_spatial_transformer: True
-        transformer_depth: 1
-        context_dim: 768  #dim of conditioning?
         use_checkpoint: True
         legacy: False
 
-    first_stage_config:
-      target: ldm.models.autoencoder.AutoencoderKL
-      params:
-        embed_dim: 4
-        monitor: val/rec_loss
-        ddconfig:
-          double_z: true
-          z_channels: 4
-          resolution: 256
-          in_channels: 3
-          out_ch: 3
-          ch: 128
-          ch_mult:
-          - 1
-          - 2
-          - 4
-          - 4
-          num_res_blocks: 2
-          attn_resolutions: []
-          dropout: 0.0
-        lossconfig:
-          target: torch.nn.Identity
-
     cond_stage_config:
       target: ldm.modules.encoders.modules.FrozenCLIPImageEmbedder
-    
-    first_stage_flow_config:
-      base_learning_rate: 4.5e-06
-      target: ldm.models.autoencoder.AutoencoderKL
-      params:
-        image_key: optical_flow #key of the target signal in the dataset samples dict
-        ckpt_path: "/home/jgaubil/projects/diffmap/codes/stable-diffmap/logs/auto_encoder/auto_encoder_kl_f8_flow_lowres/checkpoints/last.ckpt"
-        monitor: val/rec_loss
-        embed_dim: 4
-        lossconfig:
-          target: ldm.modules.losses.LPIPSWithDiscriminator
-          params:
-            disc_start: 50001
-            kl_weight: 1.0e-06
-            disc_weight: 0.5
-        ddconfig:
-          double_z: true
-          z_channels: 4
-          resolution: 256
-          in_channels: 3
-          out_ch: 3
-          ch: 128
-          ch_mult:
-          - 1
-          - 2
-          - 4
-          - 4
-          num_res_blocks: 2
-          attn_resolutions: []
-          dropout: 0.0
-    
+        
     flowmap_loss_config:
-      flow:
-        name: raft
-        num_flow_updates: 32
-        max_batch_size: 8
-        show_progress_bar: true
+      # flow:
+      #   name: raft
+      #   num_flow_updates: 32
+      #   max_batch_size: 8
+      #   show_progress_bar: true
 
       model:
         use_correspondence_weights: true
@@ -129,7 +78,7 @@ model:
 
       loss:
         flow:
-          weight: 1000.0
+          weight: 10.0
           enable_after: 0
           mapping:
             name: huber
@@ -139,7 +88,7 @@ model:
         patch_size: 32 #a modifier?
 
       cropping:
-        image_shape: [128, 128] #a modifier?
+        image_shape: [64, 64] #a modifier?
         flow_scale_multiplier: 4
         patch_size: 32 #a modifier?
 
@@ -162,11 +111,11 @@ data:
         image_transforms:
         - target: torchvision.transforms.Resize
           params:
-            size: 128 #train img resolution
+            size: 64 #train img resolution
             interpolation: 3
         - target: torchvision.transforms.CenterCrop
           params:
-            size: 128
+            size: 64
     validation: #params val dataset
       target: ldm.data.llff.LLFFDiffmapDataset
       params:
@@ -178,14 +127,14 @@ data:
         image_transforms:
         - target: torchvision.transforms.Resize
           params:
-            size: 128 #val img resolution
+            size: 64 #val img resolution
             interpolation: 3
         - target: torchvision.transforms.CenterCrop
           params:
-            size: 128
+            size: 64
 
 lightning:
-  find_unused_parameters: false
+  find_unused_parameters: true
   modelcheckpoint:
     params:
       every_n_train_steps: 1000
@@ -204,15 +153,15 @@ lightning:
           plot_progressive_rows: False #defines whether logging intermediate steps when sampling images
           plot_diffusion_rows: False #defines whether logging diffusion forward process
           N: 4 #number of reconstructions/samples logged
-          unconditional_guidance_scale: 3.0 #classifier-free guidance coeff
+          unconditional_guidance_scale: 0.0 #classifier-free guidance coeff
           unconditional_guidance_label: [""]
 
   trainer:
     benchmark: True
-    check_val_every_n_epoch: 30 #frequency of validation in epochs
+    # check_val_every_n_epoch: 30 #frequency of validation in epochs
     # val_check_interval: 5 #frequency of validation in iterations
-    # limit_val_batches: 0.0  # to disable validation
+    limit_val_batches: 0.0  # to disable validation
     num_sanity_val_steps: 0
-    accumulate_grad_batches: 1
-    max_epochs: 1000 #max number of epochs performed, 1000 is the default
+    accumulate_grad_batches: 4
+    max_epochs: 2000 #max number of epochs performed, 1000 is the default
     max_steps: 15000  #max number of iterations performed, 1000 is the default
