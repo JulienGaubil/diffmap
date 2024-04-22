@@ -11,6 +11,7 @@ from torchvision import transforms
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 
+import glob
 
 
 class LLFFnfpDataset(Dataset):
@@ -126,10 +127,6 @@ class LLFFDiffmapDataset(Dataset):
 
         #loads flow and depth - TODO do this properly
         assert len(self.scenes) == 1, "Multi scene LLFFDiffmapDataset not yet implemented"
-        self.flows_fwd = torch.load(os.path.join(root_dir, scenes[0], "flow_forward", "flows_forward.pt")) # (B,N,H,W,C), B=1, C=2
-        self.flows_bwd = torch.load(os.path.join(root_dir, scenes[0], "flow_backward", "flows_backward.pt")) # (B,N,H,W,C), B=1, C=2
-        self.flows_fwd_mask = torch.load(os.path.join(root_dir, scenes[0], "flow_forward", "flows_forward_mask.pt")) # (B,N,H,W), B=1
-        self.flows_bwd_mask = torch.load(os.path.join(root_dir, scenes[0], "flow_backward", "flows_backward_mask.pt")) # (B,N,H,W), B=1
         self.depths = torch.load(os.path.join(root_dir, scenes[0], "depths", "depths.pt")).detach() # (B,N,H,W), B=1
         self.correspondence_weights = torch.load(os.path.join(root_dir, scenes[0], "depths", "correspondence_weights.pt")).detach() # (B,N-1,H,W), B=1
 
@@ -190,9 +187,15 @@ class LLFFDiffmapDataset(Dataset):
         for k in range(len(self.scenes)):
             scene = self.scenes[k]
 
+            # Load flow and image paths.
             paths = sorted((self.root_dir / scene / "images_diffmap").iterdir())
-
-            #defines dataset pairs
+            paths_flow_fwd = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_forward", "flow_fwd_*.pt")))
+            paths_flow_bwd = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_backward", "flow_bwd_*.pt")))
+            paths_flow_fwd_mask = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_forward", "mask_flow_fwd*.pt")))
+            paths_flow_bwd_mask = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_backward", "mask_flow_bwd*.pt")))
+            assert len(paths_flow_fwd) == len(paths_flow_bwd) and len(paths_flow_bwd) == len(paths) - 1
+            
+            # Define dataset pairs.
             all_pairs_idx = np.stack([np.arange(len(paths)-1), np.arange(1,len(paths))], axis=1)
             val_idx = np.linspace(0,len(paths)-2, n_val_samples_scene, dtype=np.uint) #indices of val samples
             val_pairs_idx = np.stack([val_idx, val_idx+1], axis=1) #val pairs 
@@ -213,6 +216,10 @@ class LLFFDiffmapDataset(Dataset):
                 self.pairs_idx = all_pairs_idx[~exc_idx]
 
             self.pairs += [(paths[j[0]], paths[j[1]]) for j in self.pairs_idx]
+            self.flow_fwd_paths = [paths_flow_fwd[j[0]] for j in self.pairs_idx]
+            self.flow_bwd_paths = [paths_flow_bwd[j[0]] for j in self.pairs_idx]
+            self.flow_fwd_mask_paths = [paths_flow_fwd_mask[j[0]] for j in self.pairs_idx]
+            self.flow_bwd_mask_paths = [paths_flow_bwd_mask[j[0]] for j in self.pairs_idx]
 
 
     def __len__(self):
@@ -222,16 +229,22 @@ class LLFFDiffmapDataset(Dataset):
         #paths and indices
         prev_im_path = self.pairs[index][0]
         curr_im_path = self.pairs[index][1]
-        prev_idx, curr_idx = self.pairs_idx[index]
+        fwd_flow_path = self.flow_fwd_paths[index]
+        bwd_flow_path = self.flow_bwd_paths[index]
+        fwd_flow_mask_path = self.flow_fwd_mask_paths[index]
+        bwd_flow_mask_path = self.flow_bwd_mask_paths[index]
+        prev_idx, curr_idx = self.pairs_idx[index,0].item(), self.pairs_idx[index,1].item()
         
         # Load target, context frames
         data = {}
+        data['indices'] = torch.tensor([prev_idx, curr_idx])
         data[self.image_key] = self._load_im(curr_im_path)
         data[self.cond_key] = self._load_im(prev_im_path)
 
         # Load flow
-        flow_fwd, flow_fwd_mask = self._load_flow(self.flows_fwd, self.flows_fwd_mask, prev_idx) #flow forward ctxt -> trgt
-        flow_bwd, flow_bwd_mask = self._load_flow(self.flows_bwd, self.flows_bwd_mask, prev_idx) #flow forward trgt -> ctxt
+        flow_fwd, flow_fwd_mask = self._load_flow(fwd_flow_path, fwd_flow_mask_path)
+        flow_bwd, flow_bwd_mask = self._load_flow(bwd_flow_path, bwd_flow_mask_path)
+
         data.update({
             'optical_flow': flow_fwd,
             'optical_flow_bwd': flow_bwd,
@@ -249,16 +262,7 @@ class LLFFDiffmapDataset(Dataset):
     def _load_im(self, filename):
         im = Image.open(filename).convert("RGB")
         return self.tform(im)
-    
-    def _load_flow(self, flows, flows_mask, index):
-        flow = flows[0,index,:,:,:]
-        flow_mask = flows_mask[0,index,:,:]
-        flow_transformed = self.tform_flow(flow) #(H,W,C=2)
-        flow_mask_transformed = self.tform_flow_mask(flow_mask[None]).squeeze(0) #(H,W)
-        #adds a third channel to process flow as an image
-        flow_transformed = torch.cat([flow_transformed, torch.zeros_like(flow_transformed[:,:,0,None])], dim=2) #(H,W,C=3)
-        return flow_transformed, flow_mask_transformed
-    
+  
     def _load_depth(self, index):
         depth = self.depths[0,index,:,:]
         depth_transformed = self.tform_depth(depth) #(H,W)
@@ -272,6 +276,18 @@ class LLFFDiffmapDataset(Dataset):
         return depth_weights_transformed
 
 
+    def _load_flow(self, flow_path, flow_mask_path):
+        # Load flow and mask.
+        flow = torch.load(flow_path) #(H,W,C=2)
+        flow_mask = torch.load(flow_mask_path)
+
+        # Apply transformations.
+        flow_transformed = self.tform_flow(flow) #(H,W,C=2)
+        flow_mask_transformed = self.tform_flow_mask(flow_mask[None]).squeeze(0) #(H,W)
+
+        # Add a third channel.
+        flow_transformed = torch.cat([flow_transformed, torch.zeros_like(flow_transformed[:,:,0,None])], dim=2) #(H,W,C=3)
+        return flow_transformed, flow_mask_transformed
 
 
 
