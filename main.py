@@ -481,11 +481,10 @@ class ImageLoggerDiffmap(ImageLogger):
                     images_m[k] = images_m[k][:N].clone()
                     if isinstance(images_m[k], torch.Tensor):
                         images_m[k] = images_m[k].detach().cpu()
-                        if self.clamp and modality not in ["depth_trgt", "depth_ctxt", "optical_flow"]:
+                        if self.clamp and modality not in ["depth_trgt", "depth_ctxt"]:
                             images_m[k] = torch.clamp(images_m[k], -1., 1.)
                     if modality == "optical_flow":
-                        if k in ['inputs', 'samples']:
-                            images_m[k] = (flow_to_color(images_m[k][:,:2,:,:]) / 255)
+                        images_m[k] = (flow_to_color(images_m[k][:,:2,:,:]) / 255)
                     elif modality in ["depth_trgt", "depth_ctxt"]:
                         # TODO do it properly, remove correspondence weights from here
                         if k == 'samples':
@@ -829,7 +828,7 @@ if __name__ == "__main__":
                     C_in_old = old_state[k].size(1)
 
                     assert  C_in_new % C_in_old == 0 and  C_in_new >= C_in_old, f"Number of input channels for checkpoint and new U-Net should be multiple, got {C_in_new} and {C_in_old}"
-                    print("modifying input weights for compatibitlity")
+                    print("modifying input weights for compatibility")
                     copy_weights = True
                     scale = 1/(C_in_new//C_in_old) if copy_weights else 1e-8 #scales input to prevent activations to blow up when copying
                     #repeats checkpoint weights C_in_new//C_in_old times along input channels=dim1
@@ -837,29 +836,47 @@ if __name__ == "__main__":
                     
             #check if we need to port output weights from 4ch to n*4 ch
             out_filters_load = old_state["model.diffusion_model.out.2.weight"]
-            out_filters_current = new_state["model.diffusion_model.out.2.weight"]
+            out_filters_current = new_state["model.diff_out.2.weight"]
             out_shape = out_filters_current.shape
-            if out_shape != out_filters_load.shape:
-                rank_zero_print("Modifying weights and biases to multiply their number of output channels")
-                keys_to_change_outputs = [
+
+            keys_to_change_outputs_new = [
+                    "model.diff_out.0.weight",
+                    "model.diff_out.0.bias",
+                    "model.diff_out.2.weight",
+                    "model.diff_out.2.bias",
+                    "model_ema.diff_out0weight",
+                    "model_ema.diff_out0bias",
+                    "model_ema.diff_out2weight",
+                    "model_ema.diff_out2bias",
+            ]
+
+            keys_to_change_outputs = [
+                    "model.diffusion_model.out.0.weight",
+                    "model.diffusion_model.out.0.bias",
                     "model.diffusion_model.out.2.weight",
                     "model.diffusion_model.out.2.bias",
+                    "model_ema.diffusion_modelout0weight",
+                    "model_ema.diffusion_modelout0bias",
                     "model_ema.diffusion_modelout2weight",
                     "model_ema.diffusion_modelout2bias",
-                ]
-                #initializes randomly new output weights if input dims don't match
-                for k in keys_to_change_outputs:
-                    print("modifying output weights for compatibitlity")
-                    output_weight_new = new_state[k] # size (C_out, C_in, kernel_size, kernel_size)
-                    C_out_new = output_weight_new.size(0)
-                    C_out_old = old_state[k].size(0)
+            ]
 
-                    assert C_out_new % C_out_old == 0 and  C_out_new >= C_out_old, f"Number of input channels for checkpoint and new U-Net should be multiple, got {C_out_new} and {C_out_old}"
-                    print("modifying input weights for compatibitlity")
-                    #repeats checkpoint weights C_in_new//C_in_old times along output weights channels=dim0
-                    copy_weights = True
-                    scale = 1 if copy_weights else 1e-8 #copies exactly weights if copy initialization
-                    old_state[k] = modify_weights(old_state[k], scale=scale, n=C_out_new//C_out_old, dim=0, copy_weights=copy_weights)
+            rank_zero_print("Modifying weights and biases to multiply their number of output channels")
+            #initializes randomly new output weights to match new implementation
+            for k in range(len(keys_to_change_outputs)):
+                key_old = keys_to_change_outputs[k]
+                key_new = keys_to_change_outputs_new[k]
+                print("modifying output weights for compatibility")
+                output_weight_new = new_state[key_new] # size (C_out, C_in, kernel_size, kernel_size)
+                C_out_new = output_weight_new.size(0)
+                C_out_old = old_state[key_old].size(0)
+
+                assert C_out_new % C_out_old == 0 and  C_out_new >= C_out_old, f"Number of input channels for checkpoint and new U-Net should be multiple, got {C_out_new} and {C_out_old}"
+                print("modifying input weights for compatibility")
+                #repeats checkpoint weights C_in_new//C_in_old times along output weights channels=dim0
+                copy_weights = True
+                scale = 1 if copy_weights else 1e-8 #copies exactly weights if copy initialization
+                old_state[key_new] = modify_weights(old_state[key_old], scale=scale, n=C_out_new//C_out_old, dim=0, copy_weights=copy_weights)
 
             #if we load SD weights and still want to override with existing checkpoints
             if config.model.params.ckpt_path is not None:

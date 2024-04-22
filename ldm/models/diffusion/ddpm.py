@@ -523,6 +523,7 @@ class LatentDiffusion(DDPM):
                  scale_factor=1.0,
                  scale_by_std=False,
                  unet_trainable=True,
+                 model=None,
                  *args, **kwargs):
         self.num_timesteps_cond = default(num_timesteps_cond, 1)
         self.scale_by_std = scale_by_std
@@ -534,7 +535,7 @@ class LatentDiffusion(DDPM):
             conditioning_key = None
         ckpt_path = kwargs.pop("ckpt_path", None)
         ignore_keys = kwargs.pop("ignore_keys", [])
-        super().__init__(conditioning_key=conditioning_key, *args, **kwargs)
+        super().__init__(conditioning_key=conditioning_key, model=model, *args, **kwargs)
         self.concat_mode = concat_mode
         self.cond_stage_trainable = cond_stage_trainable
         self.unet_trainable = unet_trainable
@@ -2528,16 +2529,10 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
         model_output = self.apply_model(z_noisy, t, cond) #prediction of x_0 or noise from x_t depending on the parameterization
         if self.parameterization == "x0":
             target = z_start
-            z_recon = model_output
         elif self.parameterization == "eps":
             target = noise
-            z_recon = self.predict_start_from_noise(z_noisy, t=t, noise=model_output) #x_0 estimated from the noise estimated and x_t:=x
         else:
             raise NotImplementedError()
-        
-        # Prepares flowmap inputs
-        x_recon_flowmap = self.decode_first_stage_all(z_recon, modalities=["depth_trgt", "depth_ctxt"])
-        dummy_flowmap_batch, flows, depths_recon, correspondence_weights = self.get_input_flowmap(x_recon_flowmap, flows, flows_masks, correspondence_weights)
 
         #computes losses for every modality
         loss_dict = {}
@@ -2549,39 +2544,29 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
         
         for k in range(len(self.modalities)):
             modality = self.modalities[k]
+            loss_simple_m = self.get_loss(model_output[:, k*4:(k+1)*4, ...], target[:, k*4:(k+1)*4, ...], mean=False).mean([1, 2, 3])
+            loss_simple += loss_simple_m
+            loss_dict.update({f'{prefix}_{modality}/loss_simple': loss_simple_m.clone().detach().mean()})
 
-            if modality ==  "depth_ctxt": #flowmap loss
-                loss_flowmap = self.flowmap_loss_wrapper(dummy_flowmap_batch, flows, depths_recon, correspondence_weights, self.global_step)
-                loss_m = loss_flowmap
-                loss_dict.update({f'{prefix}_flowmap/loss': loss_flowmap.clone().detach()})
-                loss += loss_m
-            elif modality == "depth_trgt":
-                pass #TODO remove hack and properly handle modalities
-            else: #diffusion losses
-                pass
-                # loss_simple_m = self.get_loss(model_output[:, k*4:(k+1)*4, ...], target[:, k*4:(k+1)*4, ...], mean=False).mean([1, 2, 3])
-                # loss_simple += loss_simple_m
-                # loss_dict.update({f'{prefix}_{modality}/loss_simple': loss_simple_m.clone().detach().mean()})
+            loss_gamma_m = loss_simple_m / torch.exp(logvar_t) + logvar_t
+            if self.learn_logvar:
+                loss_dict.update({f'{prefix}_{modality}/loss_gamma': loss_gamma_m.mean()})
+            loss_gamma += loss_gamma_m
 
-                # loss_gamma_m = loss_simple_m / torch.exp(logvar_t) + logvar_t
-                # if self.learn_logvar:
-                #     loss_dict.update({f'{prefix}_{modality}/loss_gamma': loss_gamma_m.mean()})
-                # loss_gamma += loss_gamma_m
+            loss_vlb_m = self.get_loss(model_output[:, k*4:(k+1)*4, ...], target[:, k*4:(k+1)*4, ...], mean=False).mean(dim=(1, 2, 3))
+            loss_vlb_m = (self.lvlb_weights[t] * loss_vlb_m).mean()
+            loss_dict.update({f'{prefix}_{modality}/loss_vlb': loss_vlb_m})
+            loss_vlb += loss_vlb_m
 
-                # loss_vlb_m = self.get_loss(model_output[:, k*4:(k+1)*4, ...], target[:, k*4:(k+1)*4, ...], mean=False).mean(dim=(1, 2, 3))
-                # loss_vlb_m = (self.lvlb_weights[t] * loss_vlb_m).mean()
-                # loss_dict.update({f'{prefix}_{modality}/loss_vlb': loss_vlb_m})
-                # loss_vlb += loss_vlb_m
+            loss_m = self.l_simple_weight * loss_gamma_m.mean() + (self.original_elbo_weight * loss_vlb_m)
+            loss_dict.update({f'{prefix}_{modality}/loss': loss_m})
 
-                # loss_m = self.l_simple_weight * loss_gamma_m.mean() + (self.original_elbo_weight * loss_vlb_m)
-                # loss_dict.update({f'{prefix}_{modality}/loss': loss_m})
+            loss += loss_m
 
-                # loss += loss_m
-
-        # loss_dict.update({f'{prefix}/loss_simple': loss_simple.mean()})
-        # if self.learn_logvar:
-        #     loss_dict.update({f'{prefix}/loss_gamma': loss_gamma.mean()})
-        # loss_dict.update({f'{prefix}/loss_vlb': loss_vlb})
+        loss_dict.update({f'{prefix}/loss_simple': loss_simple.mean()})
+        if self.learn_logvar:
+            loss_dict.update({f'{prefix}/loss_gamma': loss_gamma.mean()})
+        loss_dict.update({f'{prefix}/loss_vlb': loss_vlb})
 
         
         # print("GRADIENTS convin_0 mean : ", gradients_convin0.mean())

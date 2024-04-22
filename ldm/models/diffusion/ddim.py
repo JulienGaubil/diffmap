@@ -477,7 +477,7 @@ class DDIMSamplerDiffmap(DDIMSampler):
             else:
                 c_in = torch.cat([unconditional_conditioning, c])
             model_output = self.model.apply_model(x_in, t_in, c_in)
-            e_t_uncond, e_t = model_output.chunk(2)
+            e_t_uncond, e_t = model_output.diff_output.chunk(2)
             e_t = e_t_uncond + unconditional_guidance_scale * (e_t - e_t_uncond)
 
         if score_corrector is not None:
@@ -510,7 +510,12 @@ class DDIMSamplerDiffmap(DDIMSampler):
 
         # Compute depths.
         if model_output.clean.size(1) > 0:
-            depths = self.model.split_modalities(model_output.clean, ["depth_ctxt", "depth_trgt"])
+            # TODO handle properly
+            if self.model.model.latent:
+                depths = self.model.decode_first_stage_all(model_output.clean, ["depth_ctxt", "depth_trgt"])
+            else:
+                depths = self.model.split_modalities(model_output.clean, ["depth_ctxt", "depth_trgt"])
+
             depths = torch.cat([
                 self.model.to_depth(depths["depth_ctxt"]),
                 self.model.to_depth(depths["depth_trgt"])
@@ -555,7 +560,7 @@ class DDIMSamplerDiffmap(DDIMSampler):
                 assert unconditional_conditioning is not None
                 e_t_uncond, noise_pred = torch.chunk(
                     self.model.apply_model(torch.cat((x_next, x_next)), torch.cat((t, t)),
-                                           torch.cat((unconditional_conditioning, c))), 2)
+                                           torch.cat((unconditional_conditioning, c))), 2).diff_output
                 noise_pred = e_t_uncond + unconditional_guidance_scale * (noise_pred - e_t_uncond)
 
             xt_weighted = (alphas_next[i] / alphas[i]).sqrt() * x_next

@@ -6,6 +6,7 @@ from jaxtyping import Float, Int
 from torch import Tensor
 from dataclasses import dataclass
 
+import torch.nn.functional as F
 from ldm.util import instantiate_from_config
 from ldm.modules.flowmap.model.backbone.backbone_midas import make_net
 
@@ -18,8 +19,8 @@ class DiffusionOutput:
 
 
 #Class wrapper du U-Net, appelle son forward pass dans forward
-class DiffusionMapWrapper(pl.LightningModule, ):
-    def __init__(self, diff_model_config, conditioning_key, image_size, compute_weights=False):
+class DiffusionMapWrapper(pl.LightningModule):
+    def __init__(self, diff_model_config, conditioning_key, image_size, compute_weights=False, latent=False):
         super().__init__()
 
         self.diffusion_model = instantiate_from_config(diff_model_config) # U-Net
@@ -30,11 +31,13 @@ class DiffusionMapWrapper(pl.LightningModule, ):
         assert self.conditioning_key in [None, 'concat', 'crossattn', 'hybrid', 'adm', 'hybrid-adm']
 
         self.compute_weights = compute_weights
+        self.latent = latent
         if self.compute_weights:
             model_channels = self.diffusion_model.model_channels
-            # TODO change 128 to (cropping//patch_size)*patch_size
-            self.corr_weighter_perpoint = make_net([model_channels, image_size, model_channels, 1])
+            if self.latent:
+                image_size = 8 * image_size # TODO properly handle upsampling
 
+            self.corr_weighter_perpoint = make_net([model_channels, image_size, model_channels, 1])
 
     def forward(self,
                 x: Float[Tensor, "batch channel height width"],
@@ -83,7 +86,9 @@ class DiffusionMapWrapper(pl.LightningModule, ):
         self,
         features: Float[Tensor, "batch channel height width"],
     ) -> Float[Tensor, "batch frame=1 height width"]:
-        b = features.size(0)
+        b, _, h, w = features.shape
+        if self.latent: # TODO properly handle weight computation in latent space
+            features = F.interpolate(features, (h*8, w*8), mode="bilinear")
         features = rearrange(features, "(b f) c h w -> b f h w c", b=b, f=1) # considers pairs of frames
         weights = self.corr_weighter_perpoint(features).sigmoid().clip(min=1e-4)
         return rearrange(weights, "b f h w () -> b f h w")
