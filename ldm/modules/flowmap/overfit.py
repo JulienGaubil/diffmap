@@ -8,7 +8,7 @@ import torch
 import wandb
 from jaxtyping import install_import_hook
 from lightning import Trainer
-from lightning.pytorch.plugins.environments import SLURMEnvironment
+from pytorch_lightning.plugins.environments import SLURMEnvironment
 from omegaconf import DictConfig
 from torch.utils.data import default_collate
 

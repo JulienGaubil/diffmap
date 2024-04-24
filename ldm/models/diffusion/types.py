@@ -6,7 +6,7 @@ from dataclasses import dataclass
 @dataclass
 class Sample:
     x_noisy: Float[Tensor, "batch channel height width"] # xt
-    t: int # diffusion step
+    t: int | list[int] # diffusion step
     x_recon: Float[Tensor, "batch channel height width"] | None = None # clean x0 estimate
     depths: Float[Tensor, "batch frame=2 height width"] | None = None
     weights: Float[Tensor, "batch pair=1 height width"] | None = None

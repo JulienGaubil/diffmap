@@ -1086,7 +1086,8 @@ class LatentDiffusion(DDPM):
         loss_simple = self.get_loss(model_output, target, mean=False).mean([1, 2, 3])
         loss_dict.update({f'{prefix}/loss_simple': loss_simple.mean()})
 
-        logvar_t = self.logvar[t].to(self.device)
+        logvar_t = self.logvar.to(self.device)
+        logvar_t = logvar_t[t]
         loss = loss_simple / torch.exp(logvar_t) + logvar_t
         # loss = loss_simple / torch.exp(self.logvar) + self.logvar
         if self.learn_logvar:
@@ -2538,7 +2539,9 @@ class FlowMapDiffusion(LatentDiffusion): #derived from LatentInpaintDiffusion
         loss_dict = {}
         prefix = 'train' if self.training else 'val'        
         loss_simple, loss_gamma, loss, loss_vlb  = 0, 0, 0, 0
-        logvar_t = self.logvar[t].to(self.device)
+        logvar_t = self.logvar.to(self.device)
+        logvar_t = logvar_t[t]
+
         if self.learn_logvar:
             loss_dict.update({'logvar': self.logvar.data.mean()})
         

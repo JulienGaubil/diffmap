@@ -3,9 +3,9 @@ from pathlib import Path
 import hydra
 import torch
 import wandb
-from lightning.pytorch.callbacks import Callback, LearningRateMonitor, ModelCheckpoint
-from lightning.pytorch.loggers import Logger
-from lightning.pytorch.loggers.wandb import WandbLogger
+from pytorch_lightning.callbacks import Callback, LearningRateMonitor, ModelCheckpoint
+from pytorch_lightning.loggers import Logger
+from pytorch_lightning.loggers.wandb import WandbLogger
 from omegaconf import DictConfig, OmegaConf
 
 from ..config.common import CommonCfg

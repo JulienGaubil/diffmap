@@ -329,7 +329,8 @@ class FlowmapLDM(LatentDiffusion): #derived from LatentInpaintDiffusion
         loss_dict = {}
         prefix = 'train' if self.training else 'val'        
         loss_simple, loss_gamma, loss, loss_vlb  = 0, 0, 0, 0
-        logvar_t = self.logvar[t].to(self.device)
+        logvar_t = self.logvar.to(self.device)
+        logvar_t = logvar_t[t]
         if self.learn_logvar:
             loss_dict.update({'logvar': self.logvar.data.mean()})
         

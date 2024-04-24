@@ -2,7 +2,7 @@ import hydra
 import torch
 from jaxtyping import install_import_hook
 from lightning import Trainer
-from lightning.pytorch.plugins.environments import SLURMEnvironment
+from pytorch_lightning.plugins.environments import SLURMEnvironment
 from omegaconf import DictConfig
 
 # Configure beartype and jaxtyping.

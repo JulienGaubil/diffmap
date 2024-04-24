@@ -14,7 +14,7 @@ from PIL import Image
 from pytorch_lightning import seed_everything
 from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
-from pytorch_lightning.utilities.distributed import rank_zero_only
+from pytorch_lightning.utilities import rank_zero_only
 from pytorch_lightning.utilities import rank_zero_info
 
 from ldm.data.base import Txt2ImgIterableBaseDataset
@@ -795,6 +795,9 @@ if __name__ == "__main__":
             gpuinfo = trainer_config["gpus"]
             rank_zero_print(f"Running on GPUs {gpuinfo}")
             cpu = False
+        n_gpus = len([gpu for gpu in gpuinfo.split(',') if gpu != ''])
+        if n_gpus <= 1:
+            del trainer_config["accelerator"]
         trainer_opt = argparse.Namespace(**trainer_config)
         lightning_config.trainer = trainer_config
 

@@ -1,6 +1,6 @@
 from typing import Iterator
 
-from lightning.pytorch import LightningDataModule
+from pytorch_lightning import LightningDataModule
 from torch.utils.data import DataLoader, IterableDataset
 
 

@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import torch
 from einops import reduce
 from lightning import LightningModule
-from lightning.pytorch.utilities.types import OptimizerLRScheduler
+from pytorch_lightning.utilities.types import OptimizerLRScheduler
 from torch import optim
 
 from ..dataset.types import Batch
