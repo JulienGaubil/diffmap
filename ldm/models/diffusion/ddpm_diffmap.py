@@ -68,6 +68,10 @@ class DDPMDiffmap(DDPM):
         if flowmap_loss_config is not None:
             self.flowmap_loss_wrapper = self.instantiate_flowmap_loss(flowmap_loss_config)
 
+        # Enable not training - only viz. TODO remove?
+        if self.unet_trainable is False:
+            self.model_ema.m_name2s_name = {}
+
     def make_cond_schedule(self, ):
         self.cond_ids = torch.full(size=(self.num_timesteps,), fill_value=self.num_timesteps - 1, dtype=torch.long)
         ids = torch.round(torch.linspace(0, self.num_timesteps - 1, self.num_timesteps_cond)).long()
@@ -103,7 +107,7 @@ class DDPMDiffmap(DDPM):
             model = instantiate_from_config(config)
             self.cond_stage_model = model #CLIP for conditioning
 
-    def instantiate_flowmap_loss(self, cfg_dict):
+    def instantiate_flowmap_loss(self, cfg_dict) -> FlowmapLossWrapper:
         cfg = get_typed_root_config_diffmap(cfg_dict, DiffmapCfg)
         # Set up the model.
         model = FlowmapModelDiff(cfg.model)
@@ -119,8 +123,17 @@ class DDPMDiffmap(DDPM):
     def configure_optimizers(self):
         lr = self.learning_rate
         params = []
-        if self.unet_trainable in ["attn", "conv_in", "all", True]:
-            return super().configure_optimizers()
+        if self.unet_trainable == "attn":
+            print("Training only unet attention layers")
+            for n, m in self.model.named_modules():
+                if isinstance(m, CrossAttention) and n.endswith('attn2'):
+                    params.extend(m.parameters())
+        if self.unet_trainable == "conv_in":
+            print("Training only unet input conv layers")
+            params = list(self.model.diffusion_model.input_blocks[0][0].parameters())
+        elif self.unet_trainable is True or self.unet_trainable == "all":
+            print("Training the full unet")
+            params = list(self.model.parameters())
         elif self.unet_trainable == "conv_out":
             print("Training only unet output conv layers")
             params.extend(list(self.model.diffusion_model.out[2].parameters()))
@@ -135,6 +148,10 @@ class DDPMDiffmap(DDPM):
             for n, m in self.model.named_modules():
                 if isinstance(m, CrossAttention) and n.endswith('attn2'):
                     params.extend(m.parameters())
+        elif self.unet_trainable is False:
+            params = list(self.model.parameters())
+            for p in params:
+                p.requires_grad = False
         else:
             raise ValueError(f"Unrecognised setting for unet_trainable: {self.unet_trainable}")
 
@@ -235,7 +252,7 @@ class DDPMDiffmap(DDPM):
                     xc = batch[cond_key]
                 elif cond_key == 'class_label':
                     xc = batch
-                else: #mostly the case, cond_key is self.cond_stage_key and different from input imahe
+                else: #mostly the case, cond_key is self.cond_stage_key and different from input image
                     xc = super().get_input(batch, cond_key).to(self.device) #conditioning image
             else:
                 xc = x
@@ -322,6 +339,33 @@ class DDPMDiffmap(DDPM):
 
         return dummy_flowmap_batch, flows, depths, correspondence_weights
 
+    def training_step(self, batch, batch_idx):
+        for k in self.ucg_training:
+            p = self.ucg_training[k]["p"]
+            val = self.ucg_training[k]["val"]
+            if val is None:
+                val = ""
+            for i in range(len(batch[k])):
+                if self.ucg_prng.choice(2, p=[1-p, p]):
+                    batch[k][i] = val
+
+        if self.unet_trainable is not False or not torch.is_grad_enabled():
+            loss, loss_dict = self.shared_step(batch)
+            self.log_dict(loss_dict, prog_bar=True,
+                        logger=True, on_step=True, on_epoch=True)
+
+            self.log("global_step", self.global_step,
+                    prog_bar=True, logger=True, on_step=True, on_epoch=False)
+
+            if self.use_scheduler:
+                lr = self.optimizers().param_groups[0]['lr']
+                self.log('lr_abs', lr, prog_bar=True, logger=True, on_step=True, on_epoch=False)
+
+            return loss
+        # Enable not training - viz only TODO remove?
+        else:
+            return None
+
     def shared_step(self, batch, **kwargs):
         x, c, flows, correspondence_weights  = self.get_input(batch, self.first_stage_key, return_flows_depths=True)
         loss = self(x, c, flows, correspondence_weights)
@@ -339,6 +383,10 @@ class DDPMDiffmap(DDPM):
         return self.p_losses(x, c, flows, correspondence_weights, t, *args, **kwargs)
 
     def p_losses(self, x_start, cond, flows, correspondence_weights, t, noise=None):
+        # Enable not training - viz only TODO remove?
+        if not self.unet_trainable:
+            assert not any(p.requires_grad for p in self.model.parameters())
+
         # Prepares input for U-Net diffusion
         noise = default(noise, lambda: torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
@@ -364,7 +412,8 @@ class DDPMDiffmap(DDPM):
         loss_dict = {}
         prefix = 'train' if self.training else 'val'        
         loss_simple, loss_gamma, loss, loss_vlb  = 0, 0, 0, 0
-        logvar_t = self.logvar[t].to(self.device)
+        logvar_t = self.logvar.to(self.device)
+        logvar_t = logvar_t[t]
         if self.learn_logvar:
             loss_dict.update({'logvar': self.logvar.data.mean()})
         
@@ -455,8 +504,11 @@ class DDPMDiffmap(DDPM):
 
         
         loss_dict.update({f'{prefix}/loss': loss})
-    
-        return loss, loss_dict
+        # Enable not training - viz only TODO remove?
+        if self.unet_trainable is not False or not torch.is_grad_enabled():
+            return loss, loss_dict
+        else:
+            return None
 
     # Prepare U-Net inputs and call U-Net.
     def apply_model(self, x_noisy, t, cond) -> DiffusionOutput:
@@ -585,6 +637,7 @@ class DDPMDiffmap(DDPM):
         else:
             b = batch_size = shape[0]
         
+        # Initialize sampling.
         img = torch.randn(shape, device=self.device) if x_T is None else x_T
         samples = Sample(**{"x_noisy": img, "t": timesteps})
 
@@ -720,6 +773,23 @@ class DDPMDiffmap(DDPM):
             samples = Sample(dummy_x_noisy, 0, x_recon=None, depths=depths, weights=model_output.weights)
 
         return samples, intermediates
+    
+    @torch.no_grad()
+    def sample_intermediate(self, x_start, cond, t):
+        '''Visualize intermediate diffusion step.'''
+        # Intermediate input.
+        t_intermediate = torch.full((x_start.shape[0],), t, device=self.device, dtype=torch.long)
+        x_T_intermediate = self.q_sample(x_start=x_start, t=t_intermediate)
+        samples_intermediate = Sample(**{"x_noisy": x_T_intermediate, "t": t})        
+
+        # Sample diffusion step.
+        samples_intermediate = self.p_sample(samples_intermediate, cond, t_intermediate, clip_denoised=self.clip_denoised)
+        x_noisy_intermediate = samples_intermediate.x_noisy
+        x_recon_intermediate = samples_intermediate.x_recon
+
+        # Prepare output.
+        samples_intermediate = torch.cat([x_start, x_T_intermediate, x_noisy_intermediate, x_recon_intermediate], dim=2)
+        return self.split_modalities(samples_intermediate, self.modalities_in)
 
     @torch.no_grad()
     def get_unconditional_conditioning(self, batch_size, null_label=None):
@@ -761,7 +831,6 @@ class DDPMDiffmap(DDPM):
         '''
         ema_scope = self.ema_scope if use_ema_scope else nullcontext
         use_ddim = ddim_steps is not None and self.num_timesteps > 1
-        # use_ddim = False
 
         # Prepare inputs
         log = dict()
@@ -825,6 +894,10 @@ class DDPMDiffmap(DDPM):
                 samples_depths = self.split_modalities(samples.depths, ['depth_ctxt', 'depth_trgt'], C=1) if samples.depths is not None else {}
                 samples = dict(samples_diffusion, **samples_depths)
 
+                # Visualize intermediate diffusion step.
+                t = self.num_timesteps - 1
+                samples_intermediate = self.sample_intermediate(x_start=x, cond=c, t=t)
+
         #sampling with classifier free guidance
         if unconditional_guidance_scale > 1.0 and self.model.conditioning_key not in ["concat", "hybrid"]:
             uc = self.get_unconditional_conditioning(N, unconditional_guidance_label)
@@ -872,8 +945,10 @@ class DDPMDiffmap(DDPM):
                 x_samples = samples[modality]
                 if modality == 'depth_trgt':
                     log[modality]["correspondence_weights"] = weights
-
                 log[modality]["samples"] = x_samples
+
+                if modality in samples_intermediate.keys():
+                    log[modality]["intermediates"] = samples_intermediate[modality]
                 if plot_denoise_rows and len(self.modalities_in) > 0:
                     denoise_grid = self._get_denoise_row_from_list(x_denoise_row, modality=modality) #a remplacer avec flow
                     log[modality]["denoise_row"] = denoise_grid
