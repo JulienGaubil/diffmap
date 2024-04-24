@@ -4,6 +4,8 @@ import time
 import torch
 import torchvision
 import pytorch_lightning as pl
+from jaxtyping import Float
+from torch import Tensor
 
 from packaging import version
 from omegaconf import OmegaConf
@@ -452,6 +454,51 @@ class ImageLoggerDiffmap(ImageLogger):
                  rescale, disabled, log_on_batch_idx, log_first_step,
                  log_images_kwargs, log_all_val)
 
+    @rank_zero_only
+    def _testtube(self, pl_module, images, batch_idx, split, modality):
+        for k in images:
+            grid = torchvision.utils.make_grid(images[k])
+            # TODO - properly handle modalities
+            if modality not in ['optical_flow', 'depth_trgt', 'depth_ctxt']:
+                grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
+            tag = f"{split}/{k}"
+            pl_module.logger.experiment.add_image(
+                tag, grid,
+                global_step=pl_module.global_step)
+
+    @rank_zero_only
+    def log_local(self, save_dir, split, images,
+                  global_step, current_epoch, batch_idx, modality):
+        root = os.path.join(save_dir, "images", split)
+        for k in images:
+            grid = torchvision.utils.make_grid(images[k], nrow=4)
+            if self.rescale and modality not in ['optical_flow', 'depth_trgt', 'depth_ctxt']:
+                grid = (grid + 1.0) / 2.0  # -1,1 -> 0,1; c,h,w
+            grid = grid.transpose(0, 1).transpose(1, 2).squeeze(-1)
+            grid = grid.numpy()
+            grid = (grid * 255).astype(np.uint8)
+            filename = "{}_gs-{:06}_e-{:06}_b-{:06}.png".format(
+                k,
+                global_step,
+                current_epoch,
+                batch_idx)
+            path = os.path.join(root, filename)
+            os.makedirs(os.path.split(path)[0], exist_ok=True)
+            Image.fromarray(grid).save(path)
+
+    def intermediates_figure(
+            self,
+            images: Float[Tensor, "batch viz=4 xy=2 height width"]
+            ) -> Float[Tensor, "batch rgb=3 height_viz width"]:
+        intermediate_samples = list()
+        for i in range(images.size(0)):
+            flow_vizs_sample = flow_to_color(images[i,:,:,:,:]) / 255 # gt - noised gt - denoising output - denoised gt
+            # Concatenate visualization for a given sample.
+            flow_vizs_sample = torch.cat([flow_vizs_sample[j] for j in range(flow_vizs_sample.size(0))], dim=1)
+            intermediate_samples.append(flow_vizs_sample)
+        
+        return torch.stack(intermediate_samples, dim=0)
+
     def log_img(self, pl_module, batch, batch_idx, split="train"):
         check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
         if self.log_all_val and split == "val":
@@ -484,7 +531,11 @@ class ImageLoggerDiffmap(ImageLogger):
                         if self.clamp and modality not in ["depth_trgt", "depth_ctxt"]:
                             images_m[k] = torch.clamp(images_m[k], -1., 1.)
                     if modality == "optical_flow":
-                        images_m[k] = (flow_to_color(images_m[k][:,:2,:,:]) / 255)
+                        if k.startswith('intermediates_') :
+                            images_m[k] = self.intermediates_figure(images_m[k][:,:,:2,:,:])
+                        else:
+                            images_m[k] = (flow_to_color(images_m[k][:,:2,:,:]) / 255)
+
                     elif modality in ["depth_trgt", "depth_ctxt"]:
                         # TODO do it properly, remove correspondence weights from here
                         if k == 'samples':
@@ -495,10 +546,10 @@ class ImageLoggerDiffmap(ImageLogger):
                             images_m[k] = apply_color_map_to_image(images_m[k], "gray")
 
                 self.log_local(pl_module.logger.save_dir, split_m, images_m,
-                            pl_module.global_step, pl_module.current_epoch, batch_idx)
+                            pl_module.global_step, pl_module.current_epoch, batch_idx, modality)
 
                 logger_log_images = self.logger_log_images.get(logger, lambda *args, **kwargs: None)
-                logger_log_images(pl_module, images_m, pl_module.global_step, split_m)
+                logger_log_images(pl_module, images_m, pl_module.global_step, split_m, modality)
 
             if is_train:
                 pl_module.train()

@@ -775,7 +775,11 @@ class DDPMDiffmap(DDPM):
         return samples, intermediates
     
     @torch.no_grad()
-    def sample_intermediate(self, x_start, cond, t):
+    def sample_intermediate(
+        self,
+        x_start: Float[Tensor, "batch channels=3 height width"],
+        cond,
+        t) -> Float[Tensor, "batch viz=4 channels=3 height width"]:
         '''Visualize intermediate diffusion step.'''
         # Intermediate input.
         t_intermediate = torch.full((x_start.shape[0],), t, device=self.device, dtype=torch.long)
@@ -788,8 +792,14 @@ class DDPMDiffmap(DDPM):
         x_recon_intermediate = samples_intermediate.x_recon
 
         # Prepare output.
-        samples_intermediate = torch.cat([x_start, x_T_intermediate, x_noisy_intermediate, x_recon_intermediate], dim=2)
-        return self.split_modalities(samples_intermediate, self.modalities_in)
+        out = dict()
+        samples_intermediate = torch.stack([x_start, x_T_intermediate, x_noisy_intermediate, x_recon_intermediate], dim=1)
+        samples_intermediate_indiv_split = [self.split_modalities(samples_intermediate[k], self.modalities_in) for k in range(samples_intermediate.size(0))]
+
+        for modality in self.modalities_in:
+            out[modality] = torch.stack([samples_intermediate_indiv_split[k][modality] for k in range(samples_intermediate.size(0))], dim=0)
+
+        return out
 
     @torch.no_grad()
     def get_unconditional_conditioning(self, batch_size, null_label=None):
@@ -895,8 +905,8 @@ class DDPMDiffmap(DDPM):
                 samples = dict(samples_diffusion, **samples_depths)
 
                 # Visualize intermediate diffusion step.
-                t = self.num_timesteps - 1
-                samples_intermediate = self.sample_intermediate(x_start=x, cond=c, t=t)
+                t_intermediate = self.num_timesteps // 2
+                samples_intermediate = self.sample_intermediate(x_start=x, cond=c, t=t_intermediate)
 
         #sampling with classifier free guidance
         if unconditional_guidance_scale > 1.0 and self.model.conditioning_key not in ["concat", "hybrid"]:
@@ -948,7 +958,7 @@ class DDPMDiffmap(DDPM):
                 log[modality]["samples"] = x_samples
 
                 if modality in samples_intermediate.keys():
-                    log[modality]["intermediates"] = samples_intermediate[modality]
+                    log[modality][f"intermediates_{t_intermediate}"] = samples_intermediate[modality]
                 if plot_denoise_rows and len(self.modalities_in) > 0:
                     denoise_grid = self._get_denoise_row_from_list(x_denoise_row, modality=modality) #a remplacer avec flow
                     log[modality]["denoise_row"] = denoise_grid
