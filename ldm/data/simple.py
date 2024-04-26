@@ -16,6 +16,8 @@ import cv2
 import random
 import json
 from torchvision.transforms import functional as FT
+from jaxtyping import Float
+from torch import Tensor
 
 
 # Some hacky things to make experimentation easier
@@ -109,6 +111,29 @@ class ResizeFlow:
         flow_resized = FT.resize(flow, self.size, interpolation=transforms.InterpolationMode.BILINEAR)
 
         return flow_resized
+    
+class CenterCropFlow:
+    def __init__(self, size):
+        self.size = size
+
+    def __call__(
+            self,
+            flow: Float[Tensor, "xy=2 height width"]
+            ) -> Float[Tensor, "xy=2 height_cropped width_cropped"]:
+        # Undo flow normalization.
+        _, h, w = flow.size()
+        wh = torch.tensor((w, h), dtype=torch.float32)
+        flow = flow * wh[:,None,None]
+
+        # Crop flow.
+        flow_cropped = FT.center_crop(flow, self.size)
+        
+        # Normalize flow.
+        _, h_cropped, w_cropped = flow.size()
+        wh_cropped = torch.tensor((w_cropped, h_cropped), dtype=torch.float32)
+        flow_cropped = flow_cropped / wh_cropped[:,None,None]
+
+        return flow_cropped
     
 class ResizeDepth:
     def __init__(self, size):
