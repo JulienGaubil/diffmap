@@ -56,12 +56,7 @@ class Re10kDiffmapDataset(DiffmapDataset, IterableDataset):
         #     )
         #     self.scene_chunks.extend(root_chunks)
 
-        # Collect chunks.
-        assert isinstance(scenes, str) or len(scenes) == 1, "Multi scene Re10kDiffmapDataset not yet implemented"
-        # TODO - modify path and don't enforce a single train sequence set for generalizable setting
-        self.scene_chunks = sorted(
-            [path for path in (self.root_dir / "train").iterdir() if path.suffix == ".torch"]
-        )
+      
 
         # if self.cfg.overfit_to_scene is not None:
         #     chunk_path = self.index[self.cfg.overfit_to_scene]
@@ -70,6 +65,10 @@ class Re10kDiffmapDataset(DiffmapDataset, IterableDataset):
         # Define scenes and associated chunk paths
         if scenes is None:
             raise Exception('None value for scene param of dataset not yet implemented - use str or list[str].')
+            # TODO - modify path and don't enforce a single train sequence set for generalizable setting
+            self.scene_chunks = sorted(
+                [path for path in (self.root_dir / "train").iterdir() if path.suffix == ".torch"]
+            )
             # self.scenes =  [path.name for path in self.root_dir.iterdir() if path.is_dir()]
         else:
             if isinstance(scenes, str):
@@ -80,7 +79,8 @@ class Re10kDiffmapDataset(DiffmapDataset, IterableDataset):
                 self.scenes = [str(scene) for scene in scenes]
                 # self.scene_chunks = [self.index[self.cfg.overfit_to_scene]]
             try:
-                self.scene_chunks = [self.index[scene] for scene in self.scenes]
+                self.scene_chunks = sorted(list({self.index[scene] for scene in self.scenes}))
+                print('SCENE CHUNKS : ', self.scene_chunks)
             except KeyError:
                 raise Exception(f'Dataset scene values should match Re10k scene keys, got unexpected value.')
 
@@ -125,7 +125,9 @@ class Re10kDiffmapDataset(DiffmapDataset, IterableDataset):
             merged_index = {**merged_index, **index}
         return merged_index
 
-    def shuffle(self) -> None:
+    def shuffle(self, lst) -> None:
+        indices = torch.randperm(len(lst))
+        return [lst[x] for x in indices]
         assert False
         indices = torch.randperm(len(self.pairs))
         self.pairs = [self.pairs[id] for id in indices]
@@ -166,10 +168,21 @@ class Re10kDiffmapDataset(DiffmapDataset, IterableDataset):
         Defines dataset samples (pairs of paths of consecutive images) according to the split in a list
         """
 
+        if self.split in ("train", "validation"):
+            self.scene_chunks = self.shuffle(self.scene_chunks)
+
+        # # When testing, the data loaders alternate chunks.
+        # worker_info = torch.utils.data.get_worker_info()
+        # if self.split == "test" and worker_info is not None:
+        #     self.scene_chunks = [
+        #         chunk
+        #         for chunk_index, chunk in enumerate(self.scene_chunks)
+        #         if chunk_index % worker_info.num_workers == worker_info.id
+        #     ]
+
         # self.pairs, self.flow_fwd_paths, self.flow_bwd_paths, self.flow_fwd_mask_paths, self.flow_bwd_mask_paths = list(), list(), list(), list(), list()
         for k in range(len(self.scene_chunks)):
-            
-            # scene = self.scenes[k]
+
             scene_chunk = torch.load(self.scene_chunks[k])
             # if self.cfg.overfit_to_scene is not None:
             if len(self.scenes) == 1:
@@ -180,19 +193,9 @@ class Re10kDiffmapDataset(DiffmapDataset, IterableDataset):
 
             # Shuffle chunks - TODO handle the multiscene case.
             if self.split in ("train", "validation"):
-                assert len(self.scenes) == 1, "Multi scene Re10kDiffmapDataset not yet implemented"
-                # scene_chunk = self.shuffle(scene_chunk)
+                # assert len(self.scenes) == 1, "Multi scene Re10kDiffmapDataset not yet implemented"
+                scene_chunk = self.shuffle(scene_chunk)
 
-
-
-            # # When testing, the data loaders alternate chunks.
-            # worker_info = torch.utils.data.get_worker_info()
-            # if self.split == "test" and worker_info is not None:
-            #     self.scene_chunks = [
-            #         chunk
-            #         for chunk_index, chunk in enumerate(self.scene_chunks)
-            #         if chunk_index % worker_info.num_workers == worker_info.id
-            #     ]
             
             # Iterate 
             for scene in scene_chunk:
@@ -209,36 +212,69 @@ class Re10kDiffmapDataset(DiffmapDataset, IterableDataset):
                 trgt_depths = scene["trgt_depths"] # (B, H, W)
                 correspondence_weights = scene["correspondence_weights"] # (B-1, H, W)
 
-                # Shuffle inside the chunk - TODO handle the multiscene case.
-                if self.split in ("train", "validation"):
-                    indices = torch.randperm(len(frames) - 1)
-                else:
-                    indices = torch.arange(len(frames) - 1)
+                id = torch.randint(
+                    N - 1,
+                    size=tuple(),
+                ).item()
 
-                # Sample pairs.
-                for id in indices:
-                    data = {}
-                    data['indices'] = torch.tensor([id, id+1])
 
-                    # Load image.
-                    data[self.ctxt_key] = self._get_im(frames[id])
-                    data[self.trgt_key] = self._get_im(frames[id+1])
+                # # Shuffle inside the chunk - TODO handle the multiscene case.
+                # if self.split in ("train", "validation"):
+                #     indices = torch.randperm(len(frames) - 1)
+                # else:
+                #     indices = torch.arange(len(frames) - 1)
 
-                    # Load flow.
-                    fwd_flow, mask_fwd_flow = self._get_flow(fwd_flows[id], masks_fwd_flow[id])
-                    bwd_flow, mask_bwd_flow = self._get_flow(bwd_flows[id], masks_bwd_flow[id])
 
-                    data.update({
-                        'optical_flow': fwd_flow,
-                        'optical_flow_bwd': bwd_flow,
-                        'optical_flow_mask': mask_fwd_flow,
-                        'optical_flow_bwd_mask': mask_bwd_flow
-                        }
-                    )
+                sample = {}
+                sample['indices'] = torch.tensor([id, id+1])
 
-                    # Load depth.
-                    data['depth_ctxt'] = self._get_depth(ctxt_depths[id])
-                    data['depth_trgt'] = self._get_depth(trgt_depths[id])
-                    data['correspondence_weights'] = self._get_correspondence_weights(correspondence_weights[id])
+                # Load image.
+                sample[self.ctxt_key] = self._get_im(frames[id])
+                sample[self.trgt_key] = self._get_im(frames[id+1])
 
-                    yield data
+                # # Load flow.
+                # fwd_flow, mask_fwd_flow = self._get_flow(fwd_flows[id], masks_fwd_flow[id])
+                # bwd_flow, mask_bwd_flow = self._get_flow(bwd_flows[id], masks_bwd_flow[id])
+
+                # sample.update({
+                #     'optical_flow': fwd_flow,
+                #     'optical_flow_bwd': bwd_flow,
+                #     'optical_flow_mask': mask_fwd_flow,
+                #     'optical_flow_bwd_mask': mask_bwd_flow
+                #     }
+                # )
+
+                # # Load depth.
+                # sample['depth_ctxt'] = self._get_depth(ctxt_depths[id])
+                # sample['depth_trgt'] = self._get_depth(trgt_depths[id])
+                # sample['correspondence_weights'] = self._get_correspondence_weights(correspondence_weights[id])
+
+                yield sample
+
+                # # Sample pairs.
+                # for id in indices:
+                #     data = {}
+                #     data['indices'] = torch.tensor([id, id+1])
+
+                #     # Load image.
+                #     data[self.ctxt_key] = self._get_im(frames[id])
+                #     data[self.trgt_key] = self._get_im(frames[id+1])
+
+                #     # Load flow.
+                #     fwd_flow, mask_fwd_flow = self._get_flow(fwd_flows[id], masks_fwd_flow[id])
+                #     bwd_flow, mask_bwd_flow = self._get_flow(bwd_flows[id], masks_bwd_flow[id])
+
+                #     data.update({
+                #         'optical_flow': fwd_flow,
+                #         'optical_flow_bwd': bwd_flow,
+                #         'optical_flow_mask': mask_fwd_flow,
+                #         'optical_flow_bwd_mask': mask_bwd_flow
+                #         }
+                #     )
+
+                #     # Load depth.
+                #     data['depth_ctxt'] = self._get_depth(ctxt_depths[id])
+                #     data['depth_trgt'] = self._get_depth(trgt_depths[id])
+                #     data['correspondence_weights'] = self._get_correspondence_weights(correspondence_weights[id])
+
+                #     yield data
