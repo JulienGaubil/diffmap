@@ -4,7 +4,7 @@ import hydra
 import torch
 import wandb
 from pytorch_lightning.callbacks import Callback, LearningRateMonitor, ModelCheckpoint
-from pytorch_lightning.loggers import Logger
+from lightning.pytorch.loggers import Logger
 from pytorch_lightning.loggers.wandb import WandbLogger
 from omegaconf import DictConfig, OmegaConf
 

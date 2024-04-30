@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
-from pytorch_lightning.loggers import Logger
+from lightning.pytorch.loggers import Logger
 from pytorch_lightning.utilities import rank_zero_only
 from PIL import Image
 
