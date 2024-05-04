@@ -1,0 +1,9 @@
+data:
+  name: llff
+  root: datasets/llff
+  scenes: horns
+  image_shape:
+    - 720
+    - 960
+
+  image_folder: images

@@ -1,0 +1,10 @@
+data:
+  name: llff
+  root: datasets/rooms
+  scenes:
+    # - '000001'
+  image_shape:
+    - 512
+    - 512
+    
+  image_folder: rgb
