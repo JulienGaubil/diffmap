@@ -32,7 +32,7 @@ model:
         codebook_weight: 1.0
 
 data:
-  target: main.DataModuleFromConfig
+  target: ldm.data.datamodule.DataModuleFromConfig
   params:
     batch_size: 14
     num_workers: 20

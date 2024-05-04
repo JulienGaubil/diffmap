@@ -30,7 +30,7 @@ model:
 
 #params datamodules and datasets
 data:
-  target: main.DataModuleFromConfig
+  target: ldm.data.datamodule.DataModuleFromConfig
   params:
     batch_size: 4
     num_workers: 4

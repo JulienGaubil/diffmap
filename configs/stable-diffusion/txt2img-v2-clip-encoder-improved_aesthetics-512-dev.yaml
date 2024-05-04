@@ -72,7 +72,7 @@ model:
 
 
 data:  # TODO
-  target: main.DataModuleFromConfig
+  target: ldm.data.datamodule.DataModuleFromConfig
   params:
     batch_size: 1
     num_workers: 4

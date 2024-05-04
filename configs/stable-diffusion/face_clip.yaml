@@ -70,7 +70,7 @@ model:
 
 
 data:
-  target: main.DataModuleFromConfig
+  target: ldm.data.datamodule.DataModuleFromConfig
   params:
     batch_size: 2
     num_workers: 2
