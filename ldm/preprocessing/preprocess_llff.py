@@ -1,12 +1,13 @@
 import torch
+import hydra
+import os, os.path
+
 from pathlib import Path
-from jaxtyping import install_import_hook
-from omegaconf import OmegaConf
+from jaxtyping import install_import_hook, Float
+from omegaconf import OmegaConf, DictConfig
 from einops import rearrange
 from flow_vis_torch import flow_to_color
 from torchvision.utils import save_image
-import os, os.path
-from jaxtyping import Float
 from torch import Tensor
 from tqdm import tqdm
 
@@ -83,15 +84,18 @@ def dump_llff(
         if i == fwd_flows.size(0) - 1:
             save_image(next_frame, img_path / Path(f"frame%06d.png"%(i+1)) )
 
-     
-if __name__ == "__main__":
-    parser = get_parser()
-    opt, unknown = parser.parse_known_args()
-    cfg = OmegaConf.load(opt.config)
-    cfg = OmegaConf.to_object(cfg)
+@hydra.main(
+        version_base=None,
+        config_path='../../configs/preprocessing',
+        config_name='preprocess_llff'
+)
+def preprocess_llff(cfg: DictConfig) -> None:
+    # parser = get_parser()
+    # opt, unknown = parser.parse_known_args()
+    # cfg = OmegaConf.load(opt.config)
+    # cfg = OmegaConf.to_object(cfg)
 
     # Saving paths.
-    dataset = cfg["data"]["name"]
     root = Path(cfg["data"]["root"])
     scenes = cfg["data"]["scenes"]
 
@@ -117,3 +121,6 @@ if __name__ == "__main__":
         frames = load_frames_llff(scene_path, image_path)
         frames, flows_fwd, flows_bwd, flows_fwd_mask, flows_bwd_mask = preprocess_flow(frames, (H, W))
         dump_llff(frames, flows_fwd, flows_bwd, flows_fwd_mask, flows_bwd_mask, scene_path)
+ 
+if __name__ == "__main__":
+    preprocess_llff()
