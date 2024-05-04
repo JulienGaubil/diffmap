@@ -1,26 +1,27 @@
 import argparse, os, sys, datetime, glob, importlib, csv
+import hydra
 import numpy as np
 import time
 import torch
 import torchvision
 import pytorch_lightning as pl
+
 from jaxtyping import Float
 from torch import Tensor
-
+from torch.utils.data import IterableDataset
 from packaging import version
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, DictConfig
 from torch.utils.data import random_split, DataLoader, Dataset, Subset
 from functools import partial
 from PIL import Image
-
 from pytorch_lightning import seed_everything
 from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
 from pytorch_lightning.utilities import rank_zero_only
 from pytorch_lightning.utilities import rank_zero_info
 
-from ldm.data.base import Txt2ImgIterableBaseDataset
-from ldm.util import instantiate_from_config
+from ldm.data import Txt2ImgIterableBaseDataset
+from ldm.util import instantiate_from_config, modify_conv_weights
 from flow_vis_torch import flow_to_color
 from ldm.modules.flowmap.visualization.depth import color_map_depth
 from ldm.modules.flowmap.visualization.color import apply_color_map_to_image
@@ -32,25 +33,6 @@ MULTINODE_HACKS = False
 @rank_zero_only
 def rank_zero_print(*args):
     print(*args)
-
-def modify_weights(w, scale = 1e-8, n=2, dim=1, copy_weights=False):
-    '''
-    Modifies input conv kernel weights to multiply their number of channel
-    Inputs:
-    - w: torch.tensor(C_out, C_in, k, k), tensor of conv kernel, where C_out number of output channels, C_in number of input channels, k kernel size
-    - scale: float, scale factor of the initialization. For random initialization ~0, scale=1e-8. For copy initialization as input weights, scale=1/n, for copy initialization as output, scale=1
-    - n: int, multiplication factor of the number of channels
-    - dim: int, axis along which to repeat/randomly initialize input weights
-    - copy_weights: bool, initialization method for new weights, random by default, copy of w if True
-    '''
-    """Modify weights to accomodate concatenation to unet"""
-    extra_w = scale*w.clone() if copy_weights else scale*torch.randn_like(w) #new weights to add
-    new_w = w.clone()
-    if copy_weights:
-        new_w = scale*new_w
-    for i in range(n-1): # multiplies number of channels
-        new_w = torch.cat((new_w, extra_w.clone()), dim=dim)
-    return new_w
 
 
 def get_parser(**parser_kwargs):
@@ -196,89 +178,6 @@ def worker_init_fn(_):
         return np.random.seed(np.random.get_state()[1][current_id] + worker_id)
     else:
         return np.random.seed(np.random.get_state()[1][0] + worker_id)
-
-#classe utilisee par Pokemon
-class DataModuleFromConfig(pl.LightningDataModule):
-    def __init__(self, batch_size, train=None, validation=None, test=None, predict=None,
-                 wrap=False, num_workers=None, shuffle_test_loader=False, use_worker_init_fn=False,
-                 shuffle_val_dataloader=False, num_val_workers=None):
-        super().__init__()
-        self.batch_size = batch_size
-        self.dataset_configs = dict()
-        self.num_workers = num_workers if num_workers is not None else batch_size * 2
-        if num_val_workers is None:
-            self.num_val_workers = self.num_workers
-        else:
-            self.num_val_workers = num_val_workers
-        self.use_worker_init_fn = use_worker_init_fn
-        if train is not None:
-            self.dataset_configs["train"] = train
-            self.train_dataloader = self._train_dataloader
-        if validation is not None:
-            self.dataset_configs["validation"] = validation
-            self.val_dataloader = partial(self._val_dataloader, shuffle=shuffle_val_dataloader)
-        if test is not None:
-            self.dataset_configs["test"] = test
-            self.test_dataloader = partial(self._test_dataloader, shuffle=shuffle_test_loader)
-        if predict is not None:
-            self.dataset_configs["predict"] = predict
-            self.predict_dataloader = self._predict_dataloader
-        self.wrap = wrap
-
-    def prepare_data(self):
-        for data_cfg in self.dataset_configs.values():
-            instantiate_from_config(data_cfg)
-
-    def setup(self, stage=None):
-        self.datasets = dict(
-            (k, instantiate_from_config(self.dataset_configs[k]))
-            for k in self.dataset_configs) #clefs "train", "validation", "test" (depend des splits definis dans config)
-        if self.wrap:
-            for k in self.datasets:
-                self.datasets[k] = WrappedDataset(self.datasets[k])
-
-    def _train_dataloader(self):
-        is_iterable_dataset = isinstance(self.datasets['train'], Txt2ImgIterableBaseDataset)
-        if is_iterable_dataset or self.use_worker_init_fn:
-            init_fn = worker_init_fn
-        else:
-            init_fn = None
-        return DataLoader(self.datasets["train"], batch_size=self.batch_size,
-                          num_workers=self.num_workers, shuffle=False if is_iterable_dataset else True,
-                          worker_init_fn=init_fn)
-
-    def _val_dataloader(self, shuffle=False):
-        if isinstance(self.datasets['validation'], Txt2ImgIterableBaseDataset) or self.use_worker_init_fn:
-            init_fn = worker_init_fn
-        else:
-            init_fn = None
-        return DataLoader(self.datasets["validation"],
-                          batch_size=self.batch_size,
-                          num_workers=self.num_val_workers,
-                          worker_init_fn=init_fn,
-                          shuffle=shuffle)
-
-    def _test_dataloader(self, shuffle=False):
-        is_iterable_dataset = isinstance(self.datasets['train'], Txt2ImgIterableBaseDataset)
-        if is_iterable_dataset or self.use_worker_init_fn:
-            init_fn = worker_init_fn
-        else:
-            init_fn = None
-
-        # do not shuffle dataloader for iterable dataset
-        shuffle = shuffle and (not is_iterable_dataset)
-
-        return DataLoader(self.datasets["test"], batch_size=self.batch_size,
-                          num_workers=self.num_workers, worker_init_fn=init_fn, shuffle=shuffle)
-
-    def _predict_dataloader(self, shuffle=False):
-        if isinstance(self.datasets['predict'], Txt2ImgIterableBaseDataset) or self.use_worker_init_fn:
-            init_fn = worker_init_fn
-        else:
-            init_fn = None
-        return DataLoader(self.datasets["predict"], batch_size=self.batch_size,
-                          num_workers=self.num_workers, worker_init_fn=init_fn)
-
 
 class SetupCallback(Callback):
     def __init__(self, resume, now, logdir, ckptdir, cfgdir, config,
@@ -604,11 +503,6 @@ class ImageLoggerAutoEncoder(ImageLogger):
             if is_train:
                 pl_module.train()
 
-
-
-
-
-
 class CUDACallback(Callback):
     # see https://github.com/SeanNaren/minGPT/blob/master/mingpt/callback.py
     def on_train_epoch_start(self, trainer, pl_module):
@@ -731,9 +625,13 @@ class SingleImageLogger(Callback):
                 rank_zero_print(e)
             return True
         return False
-
-
-if __name__ == "__main__":
+    
+@hydra.main(
+    version_base=None,
+    config_path="configs/stable-diffusion",
+    config_name="ddpm_diffmap_overfit.yaml",
+)
+def main(cfg: DictConfig):
     # custom parser to specify config files, train, test and debug mode,
     # postfix, resume.
     # `--key value` arguments are interpreted as arguments to the trainer.
@@ -746,7 +644,7 @@ if __name__ == "__main__":
     #   params:
     #       key: value
     # data:
-    #   target: main.DataModuleFromConfig
+    #   target: ldm.data.datamodule.DataModuleFromConfig
     #   params:
     #      batch_size: int
     #      wrap: bool
@@ -779,7 +677,7 @@ if __name__ == "__main__":
 
     # add cwd for convenience and to make classes in this file available when
     # running as `python main.py`
-    # (in particular `main.DataModuleFromConfig`)
+    # (in particular `ldm.data.datamodule.DataModuleFromConfig`)
     sys.path.append(os.getcwd())
 
     parser = get_parser()
@@ -886,7 +784,7 @@ if __name__ == "__main__":
                     copy_weights = True
                     scale = 1/(C_in_new//C_in_old) if copy_weights else 1e-8 #scales input to prevent activations to blow up when copying
                     #repeats checkpoint weights C_in_new//C_in_old times along input channels=dim1
-                    old_state[k] = modify_weights(old_state[k], scale=scale, n=C_in_new//C_in_old, dim=1, copy_weights=copy_weights)
+                    old_state[k] = modify_conv_weights(old_state[k], scale=scale, n=C_in_new//C_in_old, dim=1, copy_weights=copy_weights)
                     
             #check if we need to port output weights from 4ch to n*4 ch
             out_filters_load = old_state["model.diffusion_model.out.2.weight"]
@@ -930,7 +828,7 @@ if __name__ == "__main__":
                 #repeats checkpoint weights C_in_new//C_in_old times along output weights channels=dim0
                 copy_weights = True
                 scale = 1 if copy_weights else 1e-8 #copies exactly weights if copy initialization
-                old_state[key_new] = modify_weights(old_state[key_old], scale=scale, n=C_out_new//C_out_old, dim=0, copy_weights=copy_weights)
+                old_state[key_new] = modify_conv_weights(old_state[key_old], scale=scale, n=C_out_new//C_out_old, dim=0, copy_weights=copy_weights)
 
             #if we load SD weights and still want to override with existing checkpoints
             if config.model.params.ckpt_path is not None:
@@ -1209,3 +1107,9 @@ if __name__ == "__main__":
             os.rename(logdir, dst)
         if trainer.global_rank == 0:
             rank_zero_print(trainer.profiler.summary())
+
+
+
+
+if __name__ == "__main__":
+    main()
