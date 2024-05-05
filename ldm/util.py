@@ -6,6 +6,8 @@ import numpy as np
 
 from inspect import isfunction
 from PIL import Image, ImageDraw, ImageFont
+from jaxtyping import Float
+from torch import Tensor
 
 
 def log_txt_as_img(wh, xc, size=10):
@@ -195,3 +197,37 @@ class AdamWwithEMAandWings(optim.Optimizer):
                 ema_param.mul_(cur_ema_decay).add_(param.float(), alpha=1 - cur_ema_decay)
 
         return loss
+    
+
+def modify_conv_weights(
+        source_weights: Float[Tensor, "in_channel out_channel kernel_size kernel_size"],
+        scale: float = 1e-8,
+        n: int = 2,
+        dim: int = 1,
+        copy_weights: bool = False
+    ) -> Float[Tensor, "new_in_channel new_out_channel kernel_size kernel_size"]:
+    """
+    Extends input or output convolution weights by multiplicating number of channels.
+    Inputs:
+    - source_weights: torch.tensor(C_out, C_in, k, k), tensor of conv kernel, where C_out number of output channels, C_in number of input channels, k kernel size
+    - scale: float, scale factor of the initialization. For random initialization ~0, scale=1e-8. For copy initialization as input weights, scale=1/n, for copy initialization as output, scale=1
+    - n: int, multiplication factor for the number of channels
+    - dim: int, axis along which to repeat/randomly initialize source weights
+    - copy_weights: bool, initialization method for new weights, random by default, copy of w if True
+    """
+    # Initialize new weights with original weights.
+    new_weights = source_weights.clone()
+
+    # Initialize new additional weights.
+    if copy_weights:
+        # If copy original weights, scale to match original activations.
+        new_weights = scale * new_weights
+        extra_weights = scale * source_weights.clone()
+    else:
+        # Random initialization of additional weights.
+        extra_weights = scale * torch.randn_like(source_weights)
+    
+    # Adds new weights to extend channels dimension.
+    for i in range(n-1):
+        new_weights = torch.cat((new_weights, extra_weights.clone()), dim=dim)
+    return new_weights
