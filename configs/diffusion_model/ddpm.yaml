@@ -1,0 +1,32 @@
+target: ldm.models.diffusion.ddpm_diffmap.DDPMDiffmap
+
+base_learning_rate: 1.0e-04
+params:
+  linear_start: 0.00085
+  linear_end: 0.0120
+  num_timesteps_cond: 1
+  log_every_t: 200 #when logging generated samples, frequency of logging for intermediate samples  
+  timesteps: 1000 #sampling timesteps in forward/backward
+  first_stage_key: "trgt" #key in batch for the noised signal
+  cond_stage_key: "ctxt" #key in batch for conditioning signal
+  image_size: ${image_size} # sampling resolution
+  channels: 6 #number of noisy channels as input of U-Net
+  cond_stage_trainable: false   # Note: different from the one we trained before
+  conditioning_key: concat #defines the type of conditioning ie (crossattn, concat, hybrid)
+  monitor: null
+  parameterization: eps
+  unet_trainable: all  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn, false)
+  compute_weights: True
+  modalities_in: #diffusion modalities
+  - trgt
+  - optical_flow
+  modalities_out: #modalities as output of the U-Net
+  - trgt
+  - optical_flow
+  - depth_trgt
+  - depth_ctxt
+  ckpt_path: null
+
+  cond_stage_config:
+    target: ldm.modules.encoders.modules.FrozenCLIPImageEmbedder
+      

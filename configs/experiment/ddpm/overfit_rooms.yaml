@@ -1,0 +1,31 @@
+# @package _global_
+
+defaults:
+  - override /data: rooms
+  - override /diffusion_model/scheduler@model.params.scheduler_config: step
+
+# Anchors with references.
+image_size: 64
+scenes: '000001'
+val_scenes: null
+
+data:
+  params:
+    batch_size: 16
+    num_workers: 8
+    train:
+      params:
+        scenes: ${scenes}
+        val_scenes: ${val_scenes}
+    validation: null
+    test: null
+
+lightning:
+  trainer:
+    gpus: [0]
+    max_epochs: 3_000
+    max_steps: 15_000
+
+experiment_cfg:
+  logdir: logs/
+  name: rooms_overfit_diffmap

@@ -1,4 +1,4 @@
-import argparse, os, sys, datetime, glob, importlib, csv
+import argparse, os, sys, glob, datetime, importlib, csv
 import hydra
 import numpy as np
 import time
@@ -6,12 +6,12 @@ import torch
 import torchvision
 import pytorch_lightning as pl
 
+from hydra import compose, initialize
+from pathlib import Path
 from jaxtyping import Float
 from torch import Tensor
-from torch.utils.data import IterableDataset
 from packaging import version
 from omegaconf import OmegaConf, DictConfig
-from torch.utils.data import random_split, DataLoader, Dataset, Subset
 from functools import partial
 from PIL import Image
 from pytorch_lightning import seed_everything
@@ -20,12 +20,13 @@ from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateM
 from pytorch_lightning.utilities import rank_zero_only
 from pytorch_lightning.utilities import rank_zero_info
 
-from ldm.data import Txt2ImgIterableBaseDataset
 from ldm.util import instantiate_from_config, modify_conv_weights
 from flow_vis_torch import flow_to_color
 from ldm.modules.flowmap.visualization.depth import color_map_depth
 from ldm.modules.flowmap.visualization.color import apply_color_map_to_image
 
+# Enable arithmetic division in .yaml file with keyword "divide".
+OmegaConf.register_new_resolver("divide", (lambda x, y: x//y), replace=True)
 
 
 MULTINODE_HACKS = False
@@ -33,151 +34,6 @@ MULTINODE_HACKS = False
 @rank_zero_only
 def rank_zero_print(*args):
     print(*args)
-
-
-def get_parser(**parser_kwargs):
-    def str2bool(v):
-        if isinstance(v, bool):
-            return v
-        if v.lower() in ("yes", "true", "t", "y", "1"):
-            return True
-        elif v.lower() in ("no", "false", "f", "n", "0"):
-            return False
-        else:
-            raise argparse.ArgumentTypeError("Boolean value expected.")
-
-    parser = argparse.ArgumentParser(**parser_kwargs)
-    parser.add_argument(
-        "--finetune_from",
-        type=str,
-        nargs="?",
-        default="",
-        help="path to checkpoint to load model state from"
-    )
-    parser.add_argument(
-        "-n",
-        "--name",
-        type=str,
-        const=True,
-        default="",
-        nargs="?",
-        help="postfix for logdir",
-    )
-    parser.add_argument(
-        "-r",
-        "--resume",
-        type=str,
-        const=True,
-        default="",
-        nargs="?",
-        help="resume from logdir or checkpoint in logdir",
-    )
-    parser.add_argument(
-        "-b",
-        "--base",
-        nargs="*",
-        metavar="base_config.yaml",
-        help="paths to base configs. Loaded from left-to-right. "
-             "Parameters can be overwritten or added with command-line options of the form `--key value`.",
-        default=list(),
-    )
-    parser.add_argument(
-        "-t",
-        "--train",
-        type=str2bool,
-        const=True,
-        default=False,
-        nargs="?",
-        help="train",
-    )
-    parser.add_argument(
-        "--no-test",
-        type=str2bool,
-        const=True,
-        default=False,
-        nargs="?",
-        help="disable test",
-    )
-    parser.add_argument(
-        "-p",
-        "--project",
-        help="name of new or path to existing project"
-    )
-    parser.add_argument(
-        "-d",
-        "--debug",
-        type=str2bool,
-        nargs="?",
-        const=True,
-        default=False,
-        help="enable post-mortem debugging",
-    )
-    parser.add_argument(
-        "-s",
-        "--seed",
-        type=int,
-        default=23,
-        help="seed for seed_everything",
-    )
-    parser.add_argument(
-        "-f",
-        "--postfix",
-        type=str,
-        default="",
-        help="post-postfix for default name",
-    )
-    parser.add_argument(
-        "-l",
-        "--logdir",
-        type=str,
-        default="logs",
-        help="directory for logging dat shit",
-    )
-    parser.add_argument(
-        "--scale_lr",
-        type=str2bool,
-        nargs="?",
-        const=True,
-        default=True,
-        help="scale base-lr by ngpu * batch_size * n_accumulate",
-    )
-    return parser
-
-
-def nondefault_trainer_args(opt):
-    parser = argparse.ArgumentParser()
-    parser = Trainer.add_argparse_args(parser)
-    args = parser.parse_args([])
-    return sorted(k for k in vars(args) if getattr(opt, k) != getattr(args, k))
-
-
-class WrappedDataset(Dataset):
-    """Wraps an arbitrary object with __len__ and __getitem__ into a pytorch dataset"""
-
-    def __init__(self, dataset):
-        self.data = dataset
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        return self.data[idx]
-
-
-def worker_init_fn(_):
-    worker_info = torch.utils.data.get_worker_info()
-
-    dataset = worker_info.dataset
-    worker_id = worker_info.id
-
-    if isinstance(dataset, Txt2ImgIterableBaseDataset):
-        split_size = dataset.num_records // worker_info.num_workers
-        # reset num_records to the true number to retain reliable length information
-        dataset.sample_ids = dataset.valid_ids[worker_id * split_size:(worker_id + 1) * split_size]
-        current_id = np.random.choice(len(np.random.get_state()[1]), 1)
-        return np.random.seed(np.random.get_state()[1][current_id] + worker_id)
-    else:
-        return np.random.seed(np.random.get_state()[1][0] + worker_id)
 
 class SetupCallback(Callback):
     def __init__(self, resume, now, logdir, ckptdir, cfgdir, config,
@@ -387,12 +243,16 @@ class ImageLoggerDiffmap(ImageLogger):
 
     def intermediates_figure(
             self,
-            images: Float[Tensor, "batch viz=4 xy=2 height width"]
+            images: Float[Tensor, "batch viz=4 channel height width"],
+            modality: str
             ) -> Float[Tensor, "batch rgb=3 height_viz width"]:
         intermediate_samples = list()
         for i in range(images.size(0)):
-            flow_vizs_sample = flow_to_color(images[i,:,:,:,:]) / 255 # gt - noised gt - denoising output - denoised gt
-            # Concatenate visualization for a given sample.
+            if modality == 'optical_flow':
+                flow_vizs_sample = flow_to_color(images[i,:,:2,:,:]) / 255 # gt - noised gt - denoising output - denoised gt
+            else:
+                flow_vizs_sample = images[i]
+                # Concatenate visualization for a given sample.
             flow_vizs_sample = torch.cat([flow_vizs_sample[j] for j in range(flow_vizs_sample.size(0))], dim=1)
             intermediate_samples.append(flow_vizs_sample)
         
@@ -430,10 +290,14 @@ class ImageLoggerDiffmap(ImageLogger):
                         if self.clamp and modality not in ["depth_trgt", "depth_ctxt"]:
                             images_m[k] = torch.clamp(images_m[k], -1., 1.)
                     if modality == "optical_flow":
-                        if k.startswith('intermediates_') :
-                            images_m[k] = self.intermediates_figure(images_m[k][:,:,:2,:,:])
+                        if k.startswith('intermediates_'):
+                            images_m[k] = self.intermediates_figure(images_m[k][:,:,:,:,:], modality=modality)
                         else:
-                            images_m[k] = (flow_to_color(images_m[k][:,:2,:,:]) / 255)
+                            try:
+                                images_m[k] = (flow_to_color(images_m[k][:,:2,:,:]) / 255)
+                            except Exception:
+                                print(images_m[k].min(), images_m[k].max())
+                                assert False
 
                     elif modality in ["depth_trgt", "depth_ctxt"]:
                         # TODO do it properly, remove correspondence weights from here
@@ -443,6 +307,9 @@ class ImageLoggerDiffmap(ImageLogger):
                             images_m[k] = (images_m[k] + 1) /2
                         elif k == 'correspondence_weights':
                             images_m[k] = apply_color_map_to_image(images_m[k], "gray")
+                    
+                    elif k.startswith('intermediates_'):
+                            images_m[k] = self.intermediates_figure(images_m[k][:,:,:,:,:], modality=modality)
 
                 self.log_local(pl_module.logger.save_dir, split_m, images_m,
                             pl_module.global_step, pl_module.current_epoch, batch_idx, modality)
@@ -625,24 +492,19 @@ class SingleImageLogger(Callback):
                 rank_zero_print(e)
             return True
         return False
-    
+
 @hydra.main(
-    version_base=None,
-    config_path="configs/stable-diffusion",
-    config_name="ddpm_diffmap_overfit.yaml",
+        version_base=None,
+        config_path='configs',
+        config_name='diffmap'
 )
-def main(cfg: DictConfig):
+def run(config: DictConfig) -> None:
     # custom parser to specify config files, train, test and debug mode,
     # postfix, resume.
     # `--key value` arguments are interpreted as arguments to the trainer.
     # `nested.key=value` arguments are interpreted as config parameters.
     # configs are merged from left-to-right followed by command line parameters.
-
-    # model:
-    #   base_learning_rate: float
-    #   target: path to lightning module
-    #   params:
-    #       key: value
+   
     # data:
     #   target: ldm.data.datamodule.DataModuleFromConfig
     #   params:
@@ -660,103 +522,67 @@ def main(cfg: DictConfig):
     #          target: path to test dataset
     #          params:
     #              key: value
-    # lightning: (optional, has sane defaults and can be specified on cmdline)
-    #   trainer:
-    #       additional arguments to trainer
-    #   logger:
-    #       logger to instantiate
-    #   modelcheckpoint:
-    #       modelcheckpoint to instantiate
-    #   callbacks:
-    #       callback1:
-    #           target: importpath
-    #           params:
-    #               key: value
-
     now = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
 
-    # add cwd for convenience and to make classes in this file available when
-    # running as `python main.py`
-    # (in particular `ldm.data.datamodule.DataModuleFromConfig`)
-    sys.path.append(os.getcwd())
+    # Force load config references.
+    config = OmegaConf.to_container(config, resolve=True)
+    config = OmegaConf.create(config)
 
-    parser = get_parser()
-    parser = Trainer.add_argparse_args(parser)
-
-    opt, unknown = parser.parse_known_args()
-    if opt.name and opt.resume:
+    if config.experiment_cfg.name and config.experiment_cfg.resume:
         raise ValueError(
             "-n/--name and -r/--resume cannot be specified both."
             "If you want to resume training in a new log folder, "
             "use -n/--name in combination with --resume_from_checkpoint"
         )
-    if opt.resume:
-        if not os.path.exists(opt.resume):
-            raise ValueError("Cannot find {}".format(opt.resume))
-        if os.path.isfile(opt.resume):
-            paths = opt.resume.split("/")
+    if config.experiment_cfg.resume is not None:
+        if not os.path.exists(config.experiment_cfg.resume):
+            raise ValueError("Cannot find {}".format(config.experiment_cfg.resume))
+        if os.path.isfile(config.experiment_cfg.resume):
+            paths = config.experiment_cfg.resume.split("/")
             # idx = len(paths)-paths[::-1].index("logs")+1
             # logdir = "/".join(paths[:idx])
             logdir = "/".join(paths[:-2])
-            ckpt = opt.resume
+            ckpt = config.experiment_cfg.resume
         else:
-            assert os.path.isdir(opt.resume), opt.resume
-            logdir = opt.resume.rstrip("/")
+            assert os.path.isdir(config.experiment_cfg.resume), config.experiment_cfg.resume
+            logdir = config.experiment_cfg.resume.rstrip("/")
             ckpt = os.path.join(logdir, "checkpoints", "last.ckpt")
 
-        opt.resume_from_checkpoint = ckpt
-        base_configs = sorted(glob.glob(os.path.join(logdir, "configs/*.yaml")))
-        opt.base = base_configs + opt.base
+        config.experiment_cfg.resume_from_checkpoint = ckpt
         _tmp = logdir.split("/")
         nowname = _tmp[-1]
     else:
-        if opt.name:
-            name = "_" + opt.name
-        elif opt.base:
-            cfg_fname = os.path.split(opt.base[0])[-1]
-            cfg_name = os.path.splitext(cfg_fname)[0]
-            name = "_" + cfg_name
+        config.experiment_cfg.resume = ""
+        if config.experiment_cfg.name:
+            name = "_" + config.experiment_cfg.name
         else:
             name = ""
-        nowname = now + name + opt.postfix
-        logdir = os.path.join(opt.logdir, nowname)
+        nowname = now + name + config.experiment_cfg.postfix
+        logdir = os.path.join(config.experiment_cfg.logdir, nowname)
 
     ckptdir = os.path.join(logdir, "checkpoints")
     cfgdir = os.path.join(logdir, "configs")
-    seed_everything(opt.seed)
+    seed_everything(config.experiment_cfg.seed)
 
     try:
-        # init and save configs
-        configs = [OmegaConf.load(cfg) for cfg in opt.base]
-        cli = OmegaConf.from_dotlist(unknown)
-        config = OmegaConf.merge(*configs, cli)
-        lightning_config = config.pop("lightning", OmegaConf.create())
-        # merge trainer cli with config
-        trainer_config = lightning_config.get("trainer", OmegaConf.create())
         # default to ddp
-        trainer_config["accelerator"] = "ddp"
-        for k in nondefault_trainer_args(opt):
-            trainer_config[k] = getattr(opt, k)
-        if not "gpus" in trainer_config:
-            del trainer_config["accelerator"]
+        if config.lightning.trainer.gpus is None or config.lightning.trainer.gpus == []:
+            del config.lightning.trainer.accelerator
             cpu = True
         else:
-            gpuinfo = trainer_config["gpus"]
-            rank_zero_print(f"Running on GPUs {gpuinfo}")
+            rank_zero_print(f"Running on GPUs {config.lightning.trainer.gpus}")
             cpu = False
-        n_gpus = len([gpu for gpu in gpuinfo.split(',') if gpu != ''])
-        if n_gpus <= 1:
-            del trainer_config["accelerator"]
-        trainer_opt = argparse.Namespace(**trainer_config)
-        lightning_config.trainer = trainer_config
+            if len(config.lightning.trainer.gpus) <= 1:
+                del config.lightning.trainer.accelerator
+        trainer_opt = argparse.Namespace(**config.lightning.trainer)
 
         # model
         model = instantiate_from_config(config.model)
         model.cpu()
 
-        if not opt.finetune_from == "":
-            rank_zero_print(f"Attempting to load state from {opt.finetune_from}")
-            old_state = torch.load(opt.finetune_from, map_location="cpu")
+        if not config.experiment_cfg.finetune_from == "":
+            rank_zero_print(f"Attempting to load state from {config.experiment_cfg.finetune_from}")
+            old_state = torch.load(config.experiment_cfg.finetune_from, map_location="cpu")
             if "state_dict" in old_state:
                 rank_zero_print(f"Found nested key 'state_dict' in checkpoint, loading this instead")
                 old_state = old_state["state_dict"]
@@ -881,7 +707,7 @@ def main(cfg: DictConfig):
                 "params": {
                     "name": nowname,
                     "save_dir": logdir,
-                    "offline": opt.debug,
+                    "offline": config.experiment_cfg.debug,
                     "id": nowname,
                 }
             },
@@ -894,8 +720,8 @@ def main(cfg: DictConfig):
             },
         }
         default_logger_cfg = default_logger_cfgs["testtube"]
-        if "logger" in lightning_config:
-            logger_cfg = lightning_config.logger
+        if "logger" in config.lightning:
+            logger_cfg = config.lightning.logger
         else:
             logger_cfg = OmegaConf.create()
         logger_cfg = OmegaConf.merge(default_logger_cfg, logger_cfg)
@@ -917,8 +743,8 @@ def main(cfg: DictConfig):
             default_modelckpt_cfg["params"]["monitor"] = model.monitor
             default_modelckpt_cfg["params"]["save_top_k"] = 3
 
-        if "modelcheckpoint" in lightning_config:
-            modelckpt_cfg = lightning_config.modelcheckpoint
+        if "modelcheckpoint" in config.lightning:
+            modelckpt_cfg = config.lightning.modelcheckpoint
         else:
             modelckpt_cfg =  OmegaConf.create()
         modelckpt_cfg = OmegaConf.merge(default_modelckpt_cfg, modelckpt_cfg)
@@ -931,14 +757,14 @@ def main(cfg: DictConfig):
             "setup_callback": {
                 "target": "main.SetupCallback",
                 "params": {
-                    "resume": opt.resume,
+                    "resume": config.experiment_cfg.resume,
                     "now": now,
                     "logdir": logdir,
                     "ckptdir": ckptdir,
                     "cfgdir": cfgdir,
                     "config": config,
-                    "lightning_config": lightning_config,
-                    "debug": opt.debug,
+                    "lightning_config": config.lightning,
+                    "debug": config.experiment_cfg.debug,
                 }
             },
             "image_logger": {
@@ -963,8 +789,8 @@ def main(cfg: DictConfig):
         if version.parse(pl.__version__) >= version.parse('1.4.0'):
             default_callbacks_cfg.update({'checkpoint_callback': modelckpt_cfg})
 
-        if "callbacks" in lightning_config:
-            callbacks_cfg = lightning_config.callbacks
+        if "callbacks" in config.lightning:
+            callbacks_cfg = config.lightning.callbacks
         else:
             callbacks_cfg = OmegaConf.create()
 
@@ -974,15 +800,15 @@ def main(cfg: DictConfig):
             default_metrics_over_trainsteps_ckpt_dict = {
                 'metrics_over_trainsteps_checkpoint':
                     {"target": 'pytorch_lightning.callbacks.ModelCheckpoint',
-                     'params': {
-                         "dirpath": os.path.join(ckptdir, 'trainstep_checkpoints'),
-                         "filename": "{epoch:06}-{step:09}",
-                         "verbose": True,
-                         'save_top_k': -1,
-                         'every_n_train_steps': 10000,
-                         'save_weights_only': True
-                     }
-                     }
+                    'params': {
+                        "dirpath": os.path.join(ckptdir, 'trainstep_checkpoints'),
+                        "filename": "{epoch:06}-{step:09}",
+                        "verbose": True,
+                        'save_top_k': -1,
+                        'every_n_train_steps': 10000,
+                        'save_weights_only': True
+                    }
+                    }
             }
             default_callbacks_cfg.update(default_metrics_over_trainsteps_ckpt_dict)
 
@@ -995,7 +821,7 @@ def main(cfg: DictConfig):
         trainer_kwargs["callbacks"] = [instantiate_from_config(callbacks_cfg[k]) for k in callbacks_cfg]
         if not "plugins" in trainer_kwargs:
             trainer_kwargs["plugins"] = list()
-        if not lightning_config.get("find_unused_parameters", True):
+        if not config.lightning.get("find_unused_parameters", True):
             from pytorch_lightning.plugins import DDPPlugin
             trainer_kwargs["plugins"].append(DDPPlugin(find_unused_parameters=False))
         if MULTINODE_HACKS:
@@ -1028,16 +854,16 @@ def main(cfg: DictConfig):
         # configure learning rate
         bs, base_lr = config.data.params.batch_size, config.model.base_learning_rate
         if not cpu:
-            ngpu = len(lightning_config.trainer.gpus.strip(",").split(','))
+            ngpu = len(config.lightning.trainer.gpus)
         else:
             ngpu = 1
-        if 'accumulate_grad_batches' in lightning_config.trainer:
-            accumulate_grad_batches = lightning_config.trainer.accumulate_grad_batches
+        if 'accumulate_grad_batches' in config.lightning.trainer:
+            accumulate_grad_batches = config.lightning.trainer.accumulate_grad_batches
         else:
             accumulate_grad_batches = 1
         rank_zero_print(f"accumulate_grad_batches = {accumulate_grad_batches}")
-        lightning_config.trainer.accumulate_grad_batches = accumulate_grad_batches
-        if opt.scale_lr:
+        config.lightning.trainer.accumulate_grad_batches = accumulate_grad_batches
+        if config.experiment_cfg.scale_lr:
             model.learning_rate = accumulate_grad_batches * ngpu * bs * base_lr
             rank_zero_print(
                 "Setting learning rate to {:.2e} = {} (accumulate_grad_batches) * {} (num_gpus) * {} (batchsize) * {:.2e} (base_lr)".format(
@@ -1069,20 +895,18 @@ def main(cfg: DictConfig):
         signal.signal(signal.SIGUSR2, divein)
 
         # run
-        if opt.train:
+        if config.experiment_cfg.train:
             try:
                 trainer.fit(model, data)
             except Exception:
-                if not opt.debug:
+                if not config.experiment_cfg.debug:
                     melk()
                 raise
-        if not opt.no_test and not trainer.interrupted:
+        if not config.experiment_cfg.no_test and not trainer.interrupted:
             trainer.test(model, data)
     except RuntimeError as err:
         if MULTINODE_HACKS:
             import requests
-            import datetime
-            import os
             import socket
             device = os.environ.get("CUDA_VISIBLE_DEVICES", "?")
             hostname = socket.gethostname()
@@ -1091,7 +915,7 @@ def main(cfg: DictConfig):
             rank_zero_print(f'ERROR at {ts} on {hostname}/{resp.text} (CUDA_VISIBLE_DEVICES={device}): {type(err).__name__}: {err}', flush=True)
         raise err
     except Exception:
-        if opt.debug and trainer.global_rank == 0:
+        if config.experiment_cfg.debug and trainer.global_rank == 0:
             try:
                 import pudb as debugger
             except ImportError:
@@ -1100,7 +924,7 @@ def main(cfg: DictConfig):
         raise
     finally:
         # move newly created debug project to debug_runs
-        if opt.debug and not opt.resume and trainer.global_rank == 0:
+        if config.experiment_cfg.debug and not config.experiment_cfg.resume and trainer.global_rank == 0:
             dst, name = os.path.split(logdir)
             dst = os.path.join(dst, "debug_runs", name)
             os.makedirs(os.path.split(dst)[0], exist_ok=True)
@@ -1109,7 +933,5 @@ def main(cfg: DictConfig):
             rank_zero_print(trainer.profiler.summary())
 
 
-
-
 if __name__ == "__main__":
-    main()
+    run()

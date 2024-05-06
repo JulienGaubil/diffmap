@@ -1,0 +1,41 @@
+# @package _global_
+
+defaults:
+  - override /data: rooms
+  - override /diffusion_model/scheduler@model.params.scheduler_config: step
+
+# Anchors with references.
+image_size: 64
+scenes: null
+val_scenes: [000096, 000097, 000098, 000099, '000100']
+
+data:
+  params:
+    batch_size: 16
+    num_workers: 8
+    train:
+      params:
+        scenes: ${scenes}
+        val_scenes: ${val_scenes}
+    validation:
+      params:
+          scenes: ${scenes}
+          val_scenes: ${val_scenes}
+    test: null
+
+lightning:
+  callbacks: #configs for image logger
+    image_logger:
+      params:
+        batch_frequency: 1000 #frequency of logging images (counted in iterations) for train and val
+
+  trainer:
+    gpus: [0]
+    max_epochs: 4_000
+    max_steps: 100_000
+    check_val_every_n_epoch: 3 #frequency of validation in epochs
+    limit_val_batches: 1  # to enable validation
+
+experiment_cfg:
+  logdir: logs
+  name: rooms_pretrain_diffmap

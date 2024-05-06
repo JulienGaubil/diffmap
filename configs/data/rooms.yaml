@@ -1,0 +1,46 @@
+target: ldm.data.datamodule.DataModuleFromConfig
+
+# Common image shape used.
+image_size: 512
+
+params:
+  batch_size: 4
+  num_workers: 4
+  num_val_workers: 0 # Avoid a weird val dataloader issue
+  shuffle_val_dataloader: True
+
+  train: #params train dataset
+    target: ldm.data.rooms.RoomsDiffmapDataset
+    params:
+    # Merge dataset_params with new params fields
+      root_dir: datasets/rooms
+      scenes: null
+      val_scenes: null
+      image_transforms:
+      - target: torchvision.transforms.Resize
+        params:
+          size: ${image_size}  #train img resolution
+          interpolation: 3
+      - target: torchvision.transforms.CenterCrop
+        params:
+          size: ${image_size}
+      split: train
+
+  validation: #params val dataset
+    target: ldm.data.rooms.RoomsDiffmapDataset
+    params: 
+    # Merge dataset_params with new params fields
+      root_dir: datasets/rooms
+      scenes: null
+      val_scenes: null
+      image_transforms:
+      - target: torchvision.transforms.Resize
+        params:
+          size: ${image_size}  #train img resolution
+          interpolation: 3
+      - target: torchvision.transforms.CenterCrop
+        params:
+          size: ${image_size}
+      split: validation
+  
+  test: null
