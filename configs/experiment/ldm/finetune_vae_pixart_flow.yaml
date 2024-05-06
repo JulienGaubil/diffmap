@@ -1,0 +1,46 @@
+# @package _global_
+
+defaults:
+  - override /data: rooms
+  - override /diffusion_model/autoencoder@model: vae_pixart
+
+# Anchors with references.
+image_size: 128
+scenes: null
+val_scenes: null
+
+
+model:
+  params:
+    image_key: optical_flow #key of the target signal in the dataset samples dict
+    ckpt_path: models/first_stage_models/pixart_vae/model.ckpt
+
+
+data:
+  params:
+    batch_size: 16
+    num_workers: 8
+    train:
+      params:
+        scenes: ${scenes}
+        val_scenes: ${val_scenes}
+    validation: null
+    test: null
+
+
+lightning:
+  callbacks: #configs for image logger
+    image_logger:
+      params:
+        batch_frequency: 1000 #frequency of logging images (counted in iterations) for train and val
+
+  trainer:
+    gpus: [0]
+    max_epochs: 15_000
+    max_steps: 100_000
+    limit_val_batches: 0.0  # to enable validation
+
+
+experiment_cfg:
+  logdir: logs/dev/auto_encoder
+  name: pixart_vae_rooms

@@ -1,0 +1,55 @@
+# Defines default config.
+defaults:
+  - data: rooms
+
+
+data:
+  params:
+    train:
+      params:
+        scenes: null
+    validation:
+      params:
+        scenes: null
+
+
+lightning:
+
+  modelcheckpoint:
+    params:
+      every_n_train_steps: 1000
+
+  callbacks: #configs for image logger
+    image_logger: null
+
+  trainer:
+    gpus: [0]
+    accelerator: ddp
+
+    benchmark: True
+    # check_val_every_n_epoch: null #frequency of validation in epochs
+    # val_check_interval: null #frequency of validation in iterations
+    # limit_val_batches: 0.0  # to disable validation
+    num_sanity_val_steps: 0
+    accumulate_grad_batches: 4
+    max_epochs: 4000 #max number of epochs performed, 1000 is the default
+    max_steps: 30000  #max number of iterations performed, 1000 is the default
+
+
+experiment_cfg:
+  name: overfit # name for log folder
+  resume: null # path to checkpoint folder or .ckpt file
+
+  postfix: ""
+  logdir: logs/
+  seed: 23
+  finetune_from: ""  #SD checkpoint
+  debug: False
+  scale_lr: False
+  train: True
+  no_test: False
+
+  trainer_config:
+    gpus: [0]
+    num_nodes: 1
+    resume_from_checkpoint: ""

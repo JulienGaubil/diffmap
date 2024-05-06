@@ -357,8 +357,6 @@ class ImageLoggerAutoEncoder(ImageLogger):
                     if self.clamp:
                         images[k] = torch.clamp(images[k], -1., 1.)
                 if pl_module.image_key == "optical_flow":
-                        print("LOGGING OPTICAL FLOW")
-                        print("SIZE MIN MAX MEAN IMAGE LOGGED OPTICAL FLOW : ", images[k].size(), images[k][:,2,:,:].min(), images[k][:,2,:,:].max(), images[k][:,2,:,:].mean())
                         images[k] = (flow_to_color(images[k][:,:2,:,:]) / 255)
 
             self.log_local(pl_module.logger.save_dir, split, images,
@@ -496,7 +494,7 @@ class SingleImageLogger(Callback):
 @hydra.main(
         version_base=None,
         config_path='configs',
-        config_name='diffmap'
+        config_name='common'
 )
 def run(config: DictConfig) -> None:
     # custom parser to specify config files, train, test and debug mode,

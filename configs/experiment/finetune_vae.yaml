@@ -1,0 +1,34 @@
+# @package _global_
+
+# Defines default config.
+defaults:
+  - /diffusion_model/autoencoder@model: vae_ldm
+  - override /data: rooms
+
+# Overrides image size in data and model children configs.
+image_size: 128
+
+model:
+  base_learning_rate: 4.5e-06
+  params:
+    lossconfig:
+      target: ldm.modules.losses.LPIPSWithDiscriminator
+      params:
+        disc_start: 50001
+        kl_weight: 1.0e-06
+        disc_weight: 0.5
+
+lightning:
+
+  callbacks: #configs for image logger
+    image_logger:
+      target: main.ImageLoggerAutoEncoder
+      params:
+        log_first_step: True
+        batch_frequency: 1000 #frequency of logging images (counted in iterations) for train and val
+        max_images: 4 #number of samples logged
+        increase_log_steps: False
+
+  trainer:
+    max_epochs: 15_000 #max number of epochs performed, 1000 is the default
+    max_steps: 100_000  #max number of iterations performed, 1000 is the default

@@ -1,10 +1,12 @@
+# @package _global_
+
 # Defines default config.
 defaults:
-  - data: llff
-  - diffusion_model@model: ddpm
-  - diffusion_model/model@model.params.unet_config: unet
-  - diffusion_model/scheduler@model.params.scheduler_config: linear
-  - diffusion_model/loss@model.params.flowmap_loss_config: flowmap # flowmap loss config
+  - /diffusion_model@model: ddpm
+  - /diffusion_model/model@model.params.unet_config: unet
+  - /diffusion_model/scheduler@model.params.scheduler_config: linear
+  - /diffusion_model/loss@model.params.flowmap_loss_config: flowmap # flowmap loss config
+  - override /data: rooms
 
 # Overrides image size in data and model children configs.
 image_size: 128
@@ -39,22 +41,8 @@ model:
         # transformer_depth: 1
         # context_dim: 768  #dim of crossattn conditioning
 
-data:
-  params:
-    train:
-      params:
-        scenes: null
-    validation:
-      params:
-        scenes: null
-
-
 lightning:
   find_unused_parameters: true
-
-  modelcheckpoint:
-    params:
-      every_n_train_steps: 1000
 
   callbacks: #configs for image logger
     image_logger:
@@ -75,34 +63,5 @@ lightning:
           unconditional_guidance_label: [""]
 
   trainer:
-    gpus: [0]
-    accelerator: ddp
-
-    benchmark: True
-    # check_val_every_n_epoch: null #frequency of validation in epochs
-    # val_check_interval: null #frequency of validation in iterations
-    # limit_val_batches: 0.0  # to disable validation
-    num_sanity_val_steps: 0
-    accumulate_grad_batches: 4
     max_epochs: 4000 #max number of epochs performed, 1000 is the default
     max_steps: 30000  #max number of iterations performed, 1000 is the default
-
-
-experiment_cfg:
-  name: overfit # name for log folder
-  resume: null # path to checkpoint folder or .ckpt file
-
-  postfix: ""
-  logdir: logs/
-  seed: 23
-  finetune_from: ""  #SD checkpoint
-  debug: False
-  scale_lr: False
-  train: True
-  no_test: False
-
-  trainer_config:
-    # TODO print trainer_config
-    gpus: [0]
-    num_nodes: 1
-    resume_from_checkpoint: ""
