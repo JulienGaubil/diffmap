@@ -18,10 +18,14 @@ git submodule update --init --recursive
 ## Getting started
 
 ### Running the code 
-Run the script `main.py` with the desired config file located under `configs/experiment/`:
+Run the script `main.py` with the desired experiment config files located under `configs/experiment/` e.g. for overfitting on a single Rooms scene with a shallow model:
 ```bash
-# TODO - add scripts
-python main.py +experiment=diffmap
+python main.py +experiment=[shallow,ddpm/overfit_rooms]
+```
+
+or pretraining on all Rooms scenes with a shallow model:
+```bash
+python main.py +experiment=[shallow,ddpm/pretrain_rooms]
 ```
 
 ### Datasets
