@@ -48,7 +48,8 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
                 self.scenes = sorted([path.name for path in self.root_dir.iterdir() if path.is_dir()])
             # Remove val scenes.
             for scene in val_scenes:
-                self.scenes.remove(scene)
+                if scene in self.scenes:
+                    self.scenes.remove(scene)
             assert len(self.scenes) > 0
         
         print("Scenes : ", self.scenes)
