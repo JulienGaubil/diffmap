@@ -3,11 +3,11 @@ data:
     train:
       params:
         scenes: null
-        scenes_val: null
+        val_scenes: null
     validation:
       params:
         scenes: null
-        scenes_val: null
+        val_scenes: null
 
 
 lightning:
