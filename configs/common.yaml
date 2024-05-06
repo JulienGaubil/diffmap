@@ -1,16 +1,13 @@
-# Defines default config.
-defaults:
-  - data: rooms
-
-
 data:
   params:
     train:
       params:
         scenes: null
+        scenes_val: null
     validation:
       params:
         scenes: null
+        scenes_val: null
 
 
 lightning:

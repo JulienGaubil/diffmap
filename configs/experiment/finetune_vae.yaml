@@ -2,8 +2,8 @@
 
 # Defines default config.
 defaults:
+  - /data: rooms
   - /diffusion_model/autoencoder@model: vae_ldm
-  - override /data: rooms
 
 # Overrides image size in data and model children configs.
 image_size: 128

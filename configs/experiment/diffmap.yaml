@@ -2,15 +2,30 @@
 
 # Defines default config.
 defaults:
+  - /data: rooms
   - /diffusion_model@model: ddpm
   - /diffusion_model/model@model.params.unet_config: unet
   - /diffusion_model/scheduler@model.params.scheduler_config: linear
   - /diffusion_model/loss@model.params.flowmap_loss_config: flowmap # flowmap loss config
-  - override /data: rooms
 
 # Overrides image size in data and model children configs.
-image_size: 128
+image_size: 64
+scenes: '000001'
+val_scenes: null
 
+data:
+  params:
+    batch_size: 16
+    num_workers: 8
+    train:
+      params:
+        scenes: ${scenes}
+        val_scenes: ${val_scenes}
+    validation:
+      params:
+        scenes: ${scenes}
+        val_scenes: ${val_scenes}
+    test: null
 
 model:
   params:
@@ -63,5 +78,11 @@ lightning:
           unconditional_guidance_label: [""]
 
   trainer:
+    gpus: [0]
     max_epochs: 4000 #max number of epochs performed, 1000 is the default
     max_steps: 30000  #max number of iterations performed, 1000 is the default
+    limit_val_batches: 0.0 # disable validation
+
+experiment_cfg:
+  logdir: logs/
+  name: rooms_overfit_diffmap
