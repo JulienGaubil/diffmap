@@ -82,6 +82,8 @@ lightning:
     max_epochs: 4000 #max number of epochs performed, 1000 is the default
     max_steps: 30000  #max number of iterations performed, 1000 is the default
     limit_val_batches: 0.0 # disable validation
+    # check_val_every_n_epoch: 30 #frequency of validation in epochs
+    # val_check_interval: 5 #frequency of validation in iterations
 
 experiment_cfg:
   logdir: logs/

@@ -1,7 +1,10 @@
-target: ldm.models.diffusion.ddpm_diffmap.DDPMDiffmap
+target: ldm.models.diffusion.ldm_diffmap.FlowmapLDM
+defaults:
+  - autoencoder@params.first_stage_config: vae_ldm # AE config
+  - autoencoder@params.first_stage_flow_config: vae_ldm # flow AE config
 
 # Image resolution for sampling.
-image_size: 64
+image_size: 128
 
 base_learning_rate: 1.0e-04
 params:
@@ -11,16 +14,17 @@ params:
   log_every_t: 200 #when logging generated samples, frequency of logging for intermediate samples  
   timesteps: 1000 #sampling timesteps in forward/backward
   first_stage_key: "trgt" #key in batch for the noised signal
-  cond_stage_key: "ctxt" #key in batch for conditioning signal
-  image_size: ${image_size} # sampling resolution
-  channels: 6 #number of noisy channels as input of U-Net
+  cond_stage_key: "ctxt" #key in batch for the clean conditioning signal
+  image_size: ${divide:${image_size}, 8} #sampling resolution = image_size/8
+  channels: 8 #number of noisy channels as input of U-Net
   cond_stage_trainable: false   # Note: different from the one we trained before
   conditioning_key: concat #defines the type of conditioning ie (crossattn, concat, hybrid)
   monitor: null
+  scale_factor: 0.18215
   parameterization: eps
-  unet_trainable: all  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn, false)
+  unet_trainable: all  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn)
   compute_weights: True
-  modalities_in: #diffusion modalities
+  modalities_in:
   - trgt
   - optical_flow
   modalities_out: #modalities as output of the U-Net
@@ -32,4 +36,3 @@ params:
 
   cond_stage_config:
     target: ldm.modules.encoders.modules.FrozenCLIPImageEmbedder
-      

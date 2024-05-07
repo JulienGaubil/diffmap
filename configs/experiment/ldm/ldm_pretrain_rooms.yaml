@@ -1,0 +1,66 @@
+# @package _global_
+
+defaults:
+  - override /data: rooms
+  - override /diffusion_model/scheduler@model.params.scheduler_config: step
+  - override /diffusion_model@model: ldm
+
+
+# Anchors with references.
+image_size: 128
+scenes: null
+val_scenes: [000096, 000097, 000098, 000099, '000100']
+
+
+model:
+  params:
+    channels: 8 #number of noisy channels as input of U-Net
+    compute_weights: True
+
+    unet_config:
+      params:
+        in_channels: 12 #number of input channels U-Net, should be multiple of 4 (original size)
+        out_channels: 16 #number of output channels U-Net, should be multiple of 4 (original size)
+      
+    first_stage_config:
+      params:
+        ckpt_path: models/first_stage_models/kl-f8/model.ckpt
+
+    first_stage_flow_config:
+      params:
+        image_key: optical_flow #key of the target signal in the dataset samples dict
+        ckpt_path: /home/jgaubil/projects/diffmap/codes/stable-diffmap/logs/dev/auto_encoder/2024-05-06T12-53-39_pixart_vae_rooms/checkpoints/last.ckpt
+    
+
+data:
+  params:
+    batch_size: 16
+    num_workers: 8
+    train:
+      params:
+        scenes: ${scenes}
+        val_scenes: ${val_scenes}
+    validation:
+      params:
+          scenes: ${scenes}
+          val_scenes: ${val_scenes}
+    test: null
+
+lightning:
+  callbacks: #configs for image logger
+    image_logger:
+      params:
+        batch_frequency: 1000 #frequency of logging images (counted in iterations) for train and val
+        log_images_kwargs:
+          unconditional_guidance_scale: 0.0 #classifier-free guidance coeff
+
+  trainer:
+    gpus: [0]
+    max_epochs: 4_000
+    max_steps: 100_000
+    check_val_every_n_epoch: 3 #frequency of validation in epochs
+    limit_val_batches: 1  # to enable validation
+
+experiment_cfg:
+  logdir: logs
+  name: rooms_pretrain_diffmap_ldm
