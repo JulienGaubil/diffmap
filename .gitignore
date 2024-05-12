@@ -12,6 +12,8 @@ __pycache__
 src/
 logs
 .vscode/
+.hydra/
+visualizations
 im-examples/
 datasets
 scratch/

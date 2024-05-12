@@ -13,7 +13,7 @@ from torch.utils.data import Dataset, IterableDataset
 from omegaconf import ListConfig
 
 from .diffmap import DiffmapDataset
-from .simple import ResizeDepth
+from .utils.tforms import ResizeDepth
 
 class LLFFDiffmapDataset(DiffmapDataset, Dataset):
     def __init__(self,

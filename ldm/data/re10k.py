@@ -24,7 +24,7 @@ import numpy as np
 import glob
 import os, os.path
 
-from .simple import ResizeDepth
+from .utils.tforms import ResizeDepth
 
 to_tensor = tf.ToTensor()
 

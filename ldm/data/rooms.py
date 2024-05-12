@@ -9,7 +9,7 @@ from torchvision import transforms
 from .llff import LLFFDiffmapDataset
 from .utils.io import load_exr
 from .utils.camera import Intrinsics, Extrinsics, Camera
-from .simple import ResizeIntrinsics, CenterCropIntrinsics
+from .utils.tforms import ResizeIntrinsics, CenterCropIntrinsics
 
 class RoomsDiffmapDataset(LLFFDiffmapDataset):
     def __init__(self, **kwargs) -> None:

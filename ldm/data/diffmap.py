@@ -12,7 +12,7 @@ from torchvision import transforms
 from omegaconf import ListConfig
 
 from ldm.util import instantiate_from_config
-from .simple import ResizeFlow
+from .utils.tforms import ResizeFlow, CenterCropFlow
 
 
 class DiffmapDataset(ABC):
@@ -88,7 +88,7 @@ class DiffmapDataset(ABC):
         flow_transforms = [
             transforms.Lambda(lambda flow: rearrange(flow , 'h w c -> c h w')),
             ResizeFlow(new_size),
-            transforms.CenterCrop(crop_size),
+            CenterCropFlow(crop_size),
             transforms.Lambda(lambda flow: rearrange(flow , 'c h w -> h w c')),
             transforms.Lambda(lambda flow: torch.cat([flow, torch.zeros_like(flow[:,:,0,None])], dim=2))
         ]
