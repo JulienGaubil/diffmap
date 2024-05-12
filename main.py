@@ -19,9 +19,9 @@ from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
 from pytorch_lightning.utilities import rank_zero_only
 from pytorch_lightning.utilities import rank_zero_info
+from flow_vis_torch import flow_to_color
 
 from ldm.util import instantiate_from_config, modify_conv_weights
-from flow_vis_torch import flow_to_color
 from ldm.modules.flowmap.visualization.depth import color_map_depth
 from ldm.modules.flowmap.visualization.color import apply_color_map_to_image
 
@@ -611,10 +611,6 @@ def run(config: DictConfig) -> None:
                     old_state[k] = modify_conv_weights(old_state[k], scale=scale, n=C_in_new//C_in_old, dim=1, copy_weights=copy_weights)
                     
             #check if we need to port output weights from 4ch to n*4 ch
-            out_filters_load = old_state["model.diffusion_model.out.2.weight"]
-            out_filters_current = new_state["model.diff_out.2.weight"]
-            out_shape = out_filters_current.shape
-
             keys_to_change_outputs_new = [
                     "model.diff_out.0.weight",
                     "model.diff_out.0.bias",
