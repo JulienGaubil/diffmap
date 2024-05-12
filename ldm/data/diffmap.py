@@ -61,7 +61,7 @@ class DiffmapDataset(ABC):
         """
         pass
 
-    def initialize_im_tform(self, image_transforms) -> None:
+    def initialize_im_tform(self, image_transforms) -> transforms.Compose:
         # Instantiate image transforms defined in config.
         if isinstance(image_transforms, ListConfig):
             image_transforms = [instantiate_from_config(tt) for tt in image_transforms]
@@ -75,7 +75,7 @@ class DiffmapDataset(ABC):
         image_transforms = transforms.Compose(image_transforms)
         return image_transforms
     
-    def initialize_flow_tform(self) -> None:
+    def initialize_flow_tform(self) -> tuple[transforms.Compose, transforms.Compose]:
         assert any([isinstance(t, transforms.Resize) for t in self.tform_im.transforms]), "Add a torchvision.transforms.Resize transformation!"
         assert any([isinstance(t, transforms.CenterCrop) for t in self.tform_im.transforms]), "Add a torchvision.transforms.CenterCrop transformation!"
 
@@ -105,7 +105,7 @@ class DiffmapDataset(ABC):
     def _preprocess_im(
             self,
             im_raw: Float[Tensor, "height width 3"],
-        ) -> Float[Tensor, "transformed_height transformed_width 3"]:
+    ) -> Float[Tensor, "transformed_height transformed_width 3"]:
         # Apply image transformations.
         return self.tform_im(im_raw)
     
@@ -113,7 +113,7 @@ class DiffmapDataset(ABC):
             self,
             flow_raw: Float[Tensor, "raw_height raw_width xy=2"],
             flow_mask_raw:  Float[Tensor, "raw_height raw_width"]
-        ) -> tuple[Float[Tensor, "height width 3"], Float[Tensor, "height width"]]:
+    ) -> tuple[Float[Tensor, "height width 3"], Float[Tensor, "height width"]]:
         # Apply flow transformations.
         flow = self.tform_flow(flow_raw)
         flow_mask = self.tform_flow_mask(flow_mask_raw)

@@ -13,7 +13,7 @@ from torch.utils.data import Dataset, IterableDataset
 from omegaconf import ListConfig
 
 from .diffmap import DiffmapDataset
-from .simple import ResizeDepth, NormalizeDepth
+from .simple import ResizeDepth
 
 class LLFFDiffmapDataset(DiffmapDataset, Dataset):
     def __init__(self,
@@ -24,7 +24,7 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
         split: str = 'train',
         scenes: list | ListConfig | str | int | None = None,
         val_scenes: list | ListConfig | str | int | None = None,
-        ) -> None:
+    ) -> None:
 
         assert val_scenes is not None or split != 'validation'
 
@@ -91,7 +91,7 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
 
         return scenes
 
-    def initialize_depth_tform(self) -> None:
+    def initialize_depth_tform(self) -> tuple[transforms.Compose, transforms.Compose]:
         assert any([isinstance(t, transforms.Resize) for t in self.tform_im.transforms]), "Add a torchvision.transforms.Resize transformation!"
         assert any([isinstance(t, transforms.CenterCrop) for t in self.tform_im.transforms]), "Add a torchvision.transforms.CenterCrop transformation!"
 
@@ -102,7 +102,6 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
                 crop_size = t.size
 
         depth_transforms = [
-            NormalizeDepth(),
             ResizeDepth(new_size),
             transforms.CenterCrop(crop_size),
             transforms.Lambda(lambda depth: torch.stack([depth]*3, dim=2))
@@ -137,13 +136,12 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
     #     correspondence_weights = self.correspondence_weights[index,:,:] # (H, W)
     #     return self.correspondence_weights_transforms(correspondence_weights)
     
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.frame_pair_paths)
 
     def __getitem__(self, index: int) -> dict[Float[Tensor, "..."]]:
         # Define paths and indices.
-        prev_im_path = self.frame_pair_paths[index][0]
-        curr_im_path = self.frame_pair_paths[index][1]
+        prev_im_path, curr_im_path = self.frame_pair_paths[index]
         fwd_flow_path = self.flow_fwd_paths[index]
         bwd_flow_path = self.flow_bwd_paths[index]
         fwd_flow_mask_path = self.flow_fwd_mask_paths[index]
@@ -152,8 +150,8 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
         # Load target, context frames.
         data = {}
         data['indices'] = torch.tensor([index, index + 1])
-        data[self.trgt_key] = self._get_im(curr_im_path)
         data[self.ctxt_key] = self._get_im(prev_im_path)
+        data[self.trgt_key] = self._get_im(curr_im_path)
 
         # Load flow
         flow_fwd, flow_fwd_mask = self._get_flow(fwd_flow_path, fwd_flow_mask_path)

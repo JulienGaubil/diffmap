@@ -1,5 +1,6 @@
 data:
   params:
+    collate_fn: ldm.data.datamodule.collate_fn_diffmap
     train:
       params:
         scenes: null

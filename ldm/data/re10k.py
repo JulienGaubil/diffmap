@@ -24,7 +24,7 @@ import numpy as np
 import glob
 import os, os.path
 
-from .simple import ResizeDepth, NormalizeDepth
+from .simple import ResizeDepth
 
 to_tensor = tf.ToTensor()
 
@@ -147,7 +147,6 @@ class Re10kDiffmapDataset(DiffmapDataset, IterableDataset):
                 crop_size = t.size
 
         depth_transforms = [
-            NormalizeDepth(),
             ResizeDepth(new_size),
             transforms.CenterCrop(crop_size),
         ]

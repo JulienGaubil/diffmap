@@ -1,14 +1,12 @@
 import pytorch_lightning as pl
 import numpy as np
 import torch
-from torch.utils.data import IterableDataset
-from torch.utils.data import random_split, DataLoader, Dataset, Subset
+from torch.utils.data import IterableDataset, random_split, DataLoader, Dataset, Subset
 from functools import partial
+from typing import List
 
 from ldm.data.base import Txt2ImgIterableBaseDataset
-from ldm.util import instantiate_from_config
-
-
+from ldm.util import instantiate_from_config, get_obj_from_str
 
 def worker_init_fn(_):
     worker_info = torch.utils.data.get_worker_info()
@@ -25,6 +23,26 @@ def worker_init_fn(_):
     else:
         return np.random.seed(np.random.get_state()[1][0] + worker_id)
 
+
+def collate_fn_diffmap(batch: List) -> dict:
+    # Keys to handle manually.
+    ignored_keys = ['camera_ctxt', 'camera_trgt']
+
+    # Default batch preprocessing
+    collate_batch = [{key: value for key, value in sample.items() if key not in ignored_keys} for sample in batch]
+    collate_batch = torch.utils.data.dataloader.default_collate(collate_batch)
+
+    # Stacks other fields in lists.
+    for key in ignored_keys:
+        if key in batch[0]:
+            collate_batch[key] = [sample[key] for sample in batch]
+            print(key, len(collate_batch[key]))
+
+    print(collate_batch.keys())
+
+    return collate_batch
+
+
 class WrappedDataset(Dataset):
     """Wraps an arbitrary object with __len__ and __getitem__ into a pytorch dataset"""
 
@@ -37,10 +55,11 @@ class WrappedDataset(Dataset):
     def __getitem__(self, idx):
         return self.data[idx]
 
+
 class DataModuleFromConfig(pl.LightningDataModule):
     def __init__(self, batch_size, train=None, validation=None, test=None, predict=None,
                  wrap=False, num_workers=None, shuffle_test_loader=False, use_worker_init_fn=False,
-                 shuffle_val_dataloader=False, num_val_workers=None):
+                 shuffle_val_dataloader=False, num_val_workers=None, collate_fn: str = None):
         super().__init__()
         self.batch_size = batch_size
         self.dataset_configs = dict()
@@ -63,6 +82,8 @@ class DataModuleFromConfig(pl.LightningDataModule):
         if predict is not None:
             self.dataset_configs["predict"] = predict
             self.predict_dataloader = self._predict_dataloader
+        if collate_fn is not None:
+            self.collate_fn = get_obj_from_str(collate_fn)
         self.wrap = wrap
 
     def prepare_data(self):
@@ -85,7 +106,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
             init_fn = None
         return DataLoader(self.datasets["train"], batch_size=self.batch_size,
                           num_workers=self.num_workers, shuffle=False if is_iterable_dataset else True,
-                          worker_init_fn=init_fn)
+                          worker_init_fn=init_fn, collate_fn=self.collate_fn)
 
     def _val_dataloader(self, shuffle=False):
         if isinstance(self.datasets['validation'], IterableDataset) or self.use_worker_init_fn:
@@ -96,7 +117,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
                           batch_size=self.batch_size,
                           num_workers=self.num_val_workers,
                           worker_init_fn=init_fn,
-                          shuffle=shuffle)
+                          shuffle=shuffle, collate_fn=self.collate_fn)
 
     def _test_dataloader(self, shuffle=False):
         is_iterable_dataset = isinstance(self.datasets['train'], IterableDataset)
@@ -109,7 +130,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
         shuffle = shuffle and (not is_iterable_dataset)
 
         return DataLoader(self.datasets["test"], batch_size=self.batch_size,
-                          num_workers=self.num_workers, worker_init_fn=init_fn, shuffle=shuffle)
+                          num_workers=self.num_workers, worker_init_fn=init_fn, shuffle=shuffle, collate_fn=self.collate_fn)
 
     def _predict_dataloader(self, shuffle=False):
         if isinstance(self.datasets['predict'], IterableDataset) or self.use_worker_init_fn:
@@ -117,4 +138,4 @@ class DataModuleFromConfig(pl.LightningDataModule):
         else:
             init_fn = None
         return DataLoader(self.datasets["predict"], batch_size=self.batch_size,
-                          num_workers=self.num_workers, worker_init_fn=init_fn)
+                          num_workers=self.num_workers, worker_init_fn=init_fn, collate_fn=self.collate_fn)
