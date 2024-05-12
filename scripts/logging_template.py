@@ -14,8 +14,9 @@ from pytorch_lightning.utilities.distributed import rank_zero_only
 from tqdm import tqdm
 import datetime
 
-from ldm.util import instantiate_from_config
-from main import DataModuleFromConfig, ImageLogger, SingleImageLogger
+from ldm.misc.util import instantiate_from_config
+from ldm.visualization.image_loggers import ImageLogger, SingleImageLogger
+from ldm.data.datamodule import DataModuleFromConfig
 
 rescale = lambda x: (x + 1.) / 2.
 

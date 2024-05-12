@@ -119,7 +119,7 @@ lightning:
 
   callbacks:
     image_logger:
-      target: main.ImageLogger
+      target: ldm.visualization.image_loggers.ImageLogger
       params:
         disabled: False
         batch_frequency: 1000

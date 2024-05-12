@@ -1,5 +1,4 @@
 import importlib
-
 import torch
 from torch import optim
 import numpy as np
@@ -8,7 +7,11 @@ from inspect import isfunction
 from PIL import Image, ImageDraw, ImageFont
 from jaxtyping import Float
 from torch import Tensor
+from pytorch_lightning.utilities import rank_zero_only
 
+@rank_zero_only
+def rank_zero_print(*args):
+    print(*args)
 
 def log_txt_as_img(wh, xc, size=10):
     # wh a tuple of (width, height)

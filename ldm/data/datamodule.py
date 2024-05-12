@@ -6,7 +6,7 @@ from functools import partial
 from typing import List
 
 from ldm.data.base import Txt2ImgIterableBaseDataset
-from ldm.util import instantiate_from_config, get_obj_from_str
+from ldm.misc.util import instantiate_from_config, get_obj_from_str
 
 def worker_init_fn(_):
     worker_info = torch.utils.data.get_worker_info()

@@ -5,8 +5,7 @@ import streamlit as st
 import matplotlib.pyplot as plt
 from omegaconf import OmegaConf
 from PIL import Image
-from main import instantiate_from_config, DataModuleFromConfig
-from torch.utils.data import DataLoader
+from ldm.misc.util import instantiate_from_config
 from torch.utils.data.dataloader import default_collate
 from einops import rearrange
 from torchvision.utils import make_grid

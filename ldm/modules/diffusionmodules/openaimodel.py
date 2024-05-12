@@ -18,7 +18,7 @@ from ldm.modules.diffusionmodules.util import (
     timestep_embedding,
 )
 from ldm.modules.attention import SpatialTransformer
-from ldm.util import exists
+from ldm.misc.util import exists
 
 
 # dummy replace

@@ -22,7 +22,7 @@ lightning:
 
   callbacks: #configs for image logger
     image_logger:
-      target: main.ImageLoggerAutoEncoder
+      target: ldm.visualization.image_loggers.ImageLoggerAutoEncoder
       params:
         log_first_step: True
         batch_frequency: 1000 #frequency of logging images (counted in iterations) for train and val

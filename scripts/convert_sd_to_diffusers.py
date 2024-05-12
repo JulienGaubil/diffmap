@@ -550,7 +550,7 @@ def copy_ema_weights(checkpoint, config):
     """Copies ema weights over the original weights in a state_dict
     Only applies to the unet
     """
-    from ldm.util import instantiate_from_config
+    from ldm.misc.util import instantiate_from_config
     model = instantiate_from_config(config.model)
     for k, v in checkpoint.items():
         if k.startswith('model.'):

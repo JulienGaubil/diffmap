@@ -9,7 +9,7 @@ from tqdm import tqdm
 import torch
 from pytorch_lightning import seed_everything
 from omegaconf import OmegaConf
-from ldm.util import instantiate_from_config
+from ldm.misc.util import instantiate_from_config
 from ldm.models.diffusion.plms import PLMSSampler
 from einops import rearrange
 from torchvision.utils import make_grid

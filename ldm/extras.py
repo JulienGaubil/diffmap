@@ -1,7 +1,7 @@
 from pathlib import Path
 from omegaconf import OmegaConf
 import torch
-from ldm.util import instantiate_from_config
+from ldm.misc.util import instantiate_from_config
 import logging
 from contextlib import contextmanager
 

@@ -8,7 +8,7 @@ from einops import rearrange
 from torchvision import transforms
 from torchvision.transforms import functional as FT
 
-from ldm.util import instantiate_from_config
+from ldm.misc.util import instantiate_from_config
 from ldm.data.utils.camera import Intrinsics
 
 

@@ -16,7 +16,7 @@ from torchvision import transforms
 from einops import rearrange
 from datasets import load_dataset
 
-from ldm.util import instantiate_from_config
+from ldm.misc.util import instantiate_from_config
 
 # Some hacky things to make experimentation easier
 def make_transform_multi_folder_data(paths, caption_files=None, **kwargs):

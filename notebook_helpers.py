@@ -1,5 +1,5 @@
 from torchvision.datasets.utils import download_url
-from ldm.util import instantiate_from_config
+from ldm.misc.util import instantiate_from_config
 import torch
 import os
 # todo ?
@@ -11,7 +11,7 @@ from numpy import asarray
 from einops import rearrange, repeat
 import torch, torchvision
 from ldm.models.diffusion.ddim import DDIMSampler
-from ldm.util import ismap
+from ldm.misc.util import ismap
 import time
 from omegaconf import OmegaConf
 

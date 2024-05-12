@@ -61,7 +61,7 @@ lightning:
 
   callbacks: #configs for image logger
     image_logger:
-      target: main.ImageLoggerDiffmap
+      target: ldm.visualization.image_loggers.ImageLoggerDiffmap
       params:
         batch_frequency: 400 #frequency of logging images (counted in iterations) for train and val
         max_images: 4 #number of samples logged

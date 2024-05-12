@@ -16,7 +16,7 @@ import pandas as pd
 
 from ldm.models.diffusion.ddim import DDIMSampler
 from ldm.models.diffusion.plms import PLMSSampler
-from ldm.util import instantiate_from_config
+from ldm.misc.util import instantiate_from_config
 
 
 def load_model_from_config(config, ckpt, device, verbose=False):

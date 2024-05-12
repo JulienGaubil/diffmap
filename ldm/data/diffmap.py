@@ -11,7 +11,7 @@ from einops import rearrange
 from torchvision import transforms
 from omegaconf import ListConfig
 
-from ldm.util import instantiate_from_config
+from ldm.misc.util import instantiate_from_config
 from .utils.tforms import ResizeFlow, CenterCropFlow
 
 

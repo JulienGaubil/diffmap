@@ -2,7 +2,7 @@ import streamlit as st
 import torch
 import cv2
 import numpy as np
-from ldm.util import instantiate_from_config
+from ldm.misc.util import instantiate_from_config
 from omegaconf import OmegaConf
 from PIL import Image
 import io

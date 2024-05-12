@@ -16,7 +16,7 @@ import torch
 from webdataset.handlers import warn_and_continue
 
 
-from ldm.util import instantiate_from_config
+from ldm.misc.util import instantiate_from_config
 from ldm.data.inpainting.synthetic_mask import gen_large_mask, MASK_MODES
 from ldm.data.base import PRNGMixin
 

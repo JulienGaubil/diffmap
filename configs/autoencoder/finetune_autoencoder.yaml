@@ -76,7 +76,7 @@ lightning:
       every_n_train_steps: 1000
   callbacks: #configs for image logger
     image_logger:
-      target: main.ImageLoggerAutoEncoder
+      target: ldm.visualization.image_loggers.ImageLoggerAutoEncoder
       params:
         batch_frequency: 200 #frequency of logging images (counted in iterations) for train and val
         max_images: 4 #number of samples logged

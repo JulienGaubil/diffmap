@@ -25,7 +25,7 @@ from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateM
 from pytorch_lightning.utilities import rank_zero_only
 from pytorch_lightning.utilities import rank_zero_info
 
-from ldm.util import instantiate_from_config, modify_conv_weights
+from ldm.misc.util import instantiate_from_config, modify_conv_weights
 from ldm.data.utils.camera import pixel_grid_coordinates, to_euclidean_space, to_projective_space
 from ldm.modules.flowmap.visualization.depth import color_map_depth
 from ldm.modules.flowmap.visualization.color import apply_color_map_to_image
@@ -603,7 +603,7 @@ def sample(config: DictConfig) -> None:
         #         }
         #     },
         #     "image_logger": {
-        #         "target": "main.ImageLogger",
+        #         "target": "ldm.visualization.image_loggers.ImageLogger",
         #         "params": {
         #             "batch_frequency": 750,
         #             "max_images": 4,

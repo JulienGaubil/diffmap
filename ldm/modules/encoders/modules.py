@@ -5,7 +5,7 @@ from functools import partial
 import kornia
 
 from ldm.modules.x_transformer import Encoder, TransformerWrapper  # TODO: can we directly rely on lucidrains code and simply add this as a reuirement? --> test
-from ldm.util import default
+from ldm.misc.util import default
 import clip
 
 
@@ -472,7 +472,7 @@ class SpatialRescaler(nn.Module):
         return self(x)
 
 
-from ldm.util import instantiate_from_config
+from ldm.misc.util import instantiate_from_config
 from ldm.modules.diffusionmodules.util import make_beta_schedule, extract_into_tensor, noise_like
 
 
@@ -535,7 +535,7 @@ class LowScaleEncoder(nn.Module):
 
 
 if __name__ == "__main__":
-    from ldm.util import count_params
+    from ldm.misc.util import count_params
     sentences = ["a hedgehog drinking a whiskey", "der mond ist aufgegangen", "Ein Satz mit vielen Sonderzeichen: äöü ß ?! : 'xx-y/@s'"]
     model = FrozenT5Embedder(version="google/t5-v1_1-xl").cuda()
     count_params(model, True)
