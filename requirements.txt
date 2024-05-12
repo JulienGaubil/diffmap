@@ -39,3 +39,8 @@ ruff
 timm
 plyfile
 git+https://github.com/ChristophReich1996/Optical-Flow-Visualization-PyTorch
+
+
+
+
+OpenEXR

@@ -904,9 +904,10 @@ class DDPMDiffmap(DDPM):
                 samples_depths = self.split_modalities(samples.depths, ['depth_ctxt', 'depth_trgt'], C=1) if samples.depths is not None else {}
                 samples = dict(samples_diffusion, **samples_depths)
 
-                # Visualize intermediate diffusion step.
-                t_intermediate = self.num_timesteps // 2
-                samples_intermediate = self.sample_intermediate(x_start=x, cond=c, t=t_intermediate)
+                if len(self.modalities_in) > 0:
+                    # Visualize intermediate diffusion step.
+                    t_intermediate = self.num_timesteps // 2
+                    samples_intermediate = self.sample_intermediate(x_start=x, cond=c, t=t_intermediate)
 
         #sampling with classifier free guidance
         if unconditional_guidance_scale > 1.0 and self.model.conditioning_key not in ["concat", "hybrid"]:
@@ -953,12 +954,20 @@ class DDPMDiffmap(DDPM):
         
             if sample: #sampling of the conditional diffusion model with DDIM for accelerated inference without logging intermediates
                 x_samples = samples[modality]
-                if modality == 'depth_trgt':
-                    log[modality]["correspondence_weights"] = weights
+                if modality in ['depth_trgt', 'depth_ctxt']:
+                    # Add correspondence weights and GT depths - TODO do properly by handling modalities.
+                    log[modality]["inputs"] = super().get_input(batch, modality)
+                    if modality == 'depth_trgt':
+                        log[modality]["correspondence_weights"] = weights
+                
+                # Log samples.
                 log[modality]["samples"] = x_samples
 
-                if modality in samples_intermediate.keys():
-                    log[modality][f"intermediates_{t_intermediate}"] = samples_intermediate[modality]
+                # Add intermediates diffusion logs.
+                if len(self.modalities_in) > 0:
+                    if modality in samples_intermediate.keys():
+                        log[modality][f"intermediates_{t_intermediate}"] = samples_intermediate[modality]
+                        
                 if plot_denoise_rows and len(self.modalities_in) > 0:
                     denoise_grid = self._get_denoise_row_from_list(x_denoise_row, modality=modality) #a remplacer avec flow
                     log[modality]["denoise_row"] = denoise_grid

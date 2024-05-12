@@ -9,7 +9,7 @@ from torch import Tensor
 from pathlib import Path
 
 
-def load_exr(filepath: Path) -> Float[Tensor, "height width"] :
+def load_exr(filepath: Path, filter_points: bool = False) -> Float[Tensor, "height width"] :
     # Load bytes.
     exrfile = exr.InputFile(filepath.as_posix())
     raw_bytes = exrfile.channel('B', Imath.PixelType(Imath.PixelType.FLOAT))
@@ -22,10 +22,7 @@ def load_exr(filepath: Path) -> Float[Tensor, "height width"] :
 
     # Filter maximum value for unbounded depth.
     z_max = depth_map.max()
-    if z_max > 1000 * numpy.quantile(depth_map, 0.5): #heuristics to detect when infinite depth value is used
+    if z_max > 1000 * numpy.quantile(depth_map, 0.5) and filter_points: #heuristics to detect when infinite depth value is used
         depth_map[depth_map == z_max] =  depth_map[depth_map < z_max].max() * 1.5
-
-    # Normalize depth map.
-    depth_map = (depth_map - depth_map.min()) / (depth_map.max() - depth_map.min())
 
     return torch.from_numpy(depth_map)
