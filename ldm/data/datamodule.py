@@ -32,13 +32,10 @@ def collate_fn_diffmap(batch: List) -> dict:
     collate_batch = [{key: value for key, value in sample.items() if key not in ignored_keys} for sample in batch]
     collate_batch = torch.utils.data.dataloader.default_collate(collate_batch)
 
-    # Stacks other fields in lists.
+    # Stack other fields in lists.
     for key in ignored_keys:
         if key in batch[0]:
             collate_batch[key] = [sample[key] for sample in batch]
-            print(key, len(collate_batch[key]))
-
-    print(collate_batch.keys())
 
     return collate_batch
 

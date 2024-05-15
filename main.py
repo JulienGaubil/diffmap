@@ -1,9 +1,7 @@
 import argparse, os, sys, glob, datetime, importlib, csv
 import hydra
-import numpy as np
 import time
 import torch
-import torchvision
 import pytorch_lightning as pl
 
 from hydra import compose, initialize
@@ -12,8 +10,6 @@ from jaxtyping import Float
 from torch import Tensor
 from packaging import version
 from omegaconf import OmegaConf, DictConfig
-from functools import partial
-from PIL import Image
 from pytorch_lightning import seed_everything
 from pytorch_lightning.utilities import rank_zero_info
 from pytorch_lightning.trainer import Trainer

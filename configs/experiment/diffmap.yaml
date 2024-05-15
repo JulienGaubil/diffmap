@@ -74,7 +74,7 @@ lightning:
           plot_progressive_rows: False #defines whether logging intermediate steps when sampling images
           plot_diffusion_rows: False #defines whether logging diffusion forward process
           N: 4 #number of reconstructions/samples logged
-          unconditional_guidance_scale: 3.0 #classifier-free guidance coeff
+          unconditional_guidance_scale: 0.0 #classifier-free guidance coeff
           unconditional_guidance_label: [""]
 
   trainer:

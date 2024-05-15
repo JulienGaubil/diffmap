@@ -29,7 +29,7 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
             intrinsics_pinhole = np.loadtxt(intrinsics_file, max_rows=1)
             fx = fy = intrinsics_pinhole[0]
             cx, cy = intrinsics_pinhole[1], intrinsics_pinhole[2]
-            HW = np.loadtxt(intrinsics_file, skiprows=3)
+            HW = np.loadtxt(intrinsics_file, skiprows=3).astype(int)
             intrinsics = Intrinsics(**{'fx': fx, 'fy': fy, 'cx': cx, 'cy': cy, 'resolution': HW})
 
             # Prepare extrinsics.

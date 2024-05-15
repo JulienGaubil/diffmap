@@ -237,7 +237,7 @@ class Camera:
         im_plane_pts, local_depths = self.local_to_im_plane(local_pts)
         return im_plane_pts, local_depths
     
-    def im_plane_to_pixel_coordinates(
+    def im_plane_to_pixel(
             self,
             im_plane_pts: Float[Tensor, "xyw=3 point"],
             round_coords: bool = True
@@ -254,7 +254,7 @@ class Camera:
             pixel_coordinates = torch.round(pixel_coordinates)
         return pixel_coordinates
     
-    def world_to_pixel_coordinates(
+    def world_to_pixel(
             self,
             world_pts: Float[Tensor, "xyzw=4 point"],
             round_coords: bool = True
@@ -263,7 +263,7 @@ class Camera:
         in local camera coordinates.
         """
         im_plane_coordinates, local_depths = self.world_to_im_plane(world_pts)
-        pixels_coordinates = self.im_plane_to_pixel_coordinates(im_plane_coordinates, round_coords)
+        pixels_coordinates = self.im_plane_to_pixel(im_plane_coordinates, round_coords)
 
         return pixels_coordinates, local_depths
     
