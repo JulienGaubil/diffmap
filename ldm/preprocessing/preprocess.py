@@ -62,7 +62,7 @@ def preprocess_flow(
         Float[Tensor, "pair height width xy=2"],
         Float[Tensor, "pair height width"],
         Float[Tensor, "pair height width"]
-    ] :
+    ]:
 
     H, W = flow_shape
 

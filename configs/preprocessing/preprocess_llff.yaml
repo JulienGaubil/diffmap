@@ -1,7 +1,7 @@
 data:
-  name: llff
   root: datasets/llff
-  scenes: horns
+  scenes: 
+    - horns
   image_shape:
     - 720
     - 960

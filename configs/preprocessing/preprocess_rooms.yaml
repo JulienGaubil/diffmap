@@ -1,5 +1,4 @@
 data:
-  name: llff
   root: datasets/rooms
   scenes:
     # - '000001'
