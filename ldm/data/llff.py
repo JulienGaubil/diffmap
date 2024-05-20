@@ -24,6 +24,7 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
         split: str = 'train',
         scenes: list | ListConfig | str | int | None = None,
         val_scenes: list | ListConfig | str | int | None = None,
+        stride: int = 1
     ) -> None:
 
         assert val_scenes is not None or split != 'validation'
@@ -35,6 +36,7 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
         self.trgt_key = trgt_key
         self.ctxt_key = ctxt_key
         self.split = split
+        self.stride = stride
 
         # Load scenes.
         val_scenes = self.load_scenes(val_scenes) if val_scenes is not None else []
@@ -59,11 +61,21 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
             scene = self.scenes[k]
 
             # Load flow and image paths.
-            paths_frames = sorted((self.root_dir / scene / "images_diffmap").iterdir())
-            paths_flow_fwd = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_forward", "flow_fwd_*.pt")))
-            paths_flow_bwd = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_backward", "flow_bwd_*.pt")))
-            paths_flow_fwd_mask = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_forward", "mask_flow_fwd*.pt")))
-            paths_flow_bwd_mask = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_backward", "mask_flow_bwd*.pt")))
+            if self.stride == 1:
+                paths_frames = sorted((self.root_dir / scene / "images_diffmap_projection").iterdir())
+                paths_flow_fwd = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_forward_projection", "flow_fwd_*.pt")))
+                paths_flow_bwd = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_backward_projection", "flow_bwd_*.pt")))
+                paths_flow_fwd_mask = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_forward_projection", "mask_flow_fwd*.pt")))
+                paths_flow_bwd_mask = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_backward_projection", "mask_flow_bwd*.pt")))
+            elif self.stride == 3:
+                paths_frames = sorted((self.root_dir / scene / "images_diffmap_projection_stride_3").iterdir())
+                paths_flow_fwd = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_forward_projection_stride_3", "flow_fwd_*.pt")))
+                paths_flow_bwd = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_backward_projection_stride_3", "flow_bwd_*.pt")))
+                paths_flow_fwd_mask = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_forward_projection_stride_3", "mask_flow_fwd*.pt")))
+                paths_flow_bwd_mask = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_backward_projection_stride_3", "mask_flow_bwd*.pt")))
+            else:
+                raise Exception(f'Stride {self.stride} not valid, should be 1 or 3.')
+            
             assert len(paths_flow_fwd) == len(paths_flow_bwd) and len(paths_flow_bwd) == len(paths_frames) - 1
             
             # Define dataset pairs.

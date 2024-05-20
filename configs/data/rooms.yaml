@@ -16,6 +16,8 @@ params:
       root_dir: datasets/rooms
       scenes: null
       val_scenes: null
+      stride: 1
+      flip_trajectories: false
       image_transforms:
       - target: torchvision.transforms.Resize
         params:
@@ -33,6 +35,8 @@ params:
       root_dir: datasets/rooms
       scenes: null
       val_scenes: null
+      stride: 1
+      flip_trajectories: false
       image_transforms:
       - target: torchvision.transforms.Resize
         params:
