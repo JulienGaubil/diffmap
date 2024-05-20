@@ -7,3 +7,4 @@ data:
     - 512
     
   image_folder: rgb
+  stride: 1

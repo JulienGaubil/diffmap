@@ -20,21 +20,28 @@ from PIL import Image
 from ldm.data.utils.camera import Camera, Intrinsics, Extrinsics
 from ldm.data.utils.io import load_exr
 from ldm.data.utils.camera import pixel_grid_coordinates
+from ldm.misc.projection import compute_flow_projection, compute_consistency_mask
 from ldm.modules.flowmap.model.projection import sample_image_grid
 
 
 def dump_rooms(
-        frames: Float[Tensor, "batch 3 height width"],
-        fwd_flows: Float[Tensor, "pair height width xy=2"],
-        bwd_flows: Float[Tensor, "pair height width xy=2"],
-        masks_flow_fwd: Float[Tensor, "pair height width"],
-        masks_flow_bwd: Float[Tensor, "pair height width"],
-        scene_path: Path,
-    ) -> None:
+    frames: Float[Tensor, "batch 3 height width"],
+    fwd_flows: Float[Tensor, "pair height width xy=2"],
+    bwd_flows: Float[Tensor, "pair height width xy=2"],
+    masks_flow_fwd: Float[Tensor, "pair height width"],
+    masks_flow_bwd: Float[Tensor, "pair height width"],
+    scene_path: Path,
+    stride: int
+) -> None:
+    
+    if stride == 1:
+        suffix = ""
+    else:
+        suffix = f"_stride_{stride}"
 
-    img_path = scene_path / "images_diffmap_projection"
-    flow_fwd_path = scene_path / "flow_forward_projection"
-    flow_bwd_path = scene_path / "flow_backward_projection"
+    img_path = os.path.join(scene_path, "images_diffmap_projection" + suffix)
+    flow_fwd_path = os.path.join(scene_path, "flow_forward_projection" + suffix)
+    flow_bwd_path = os.path.join(scene_path, "flow_backward_projection" + suffix)
 
     os.makedirs(flow_fwd_path, exist_ok=True)
     os.makedirs(flow_bwd_path, exist_ok=True)
@@ -69,102 +76,10 @@ def dump_rooms(
         if i == fwd_flows.size(0) - 1:
             save_image(next_frame, img_path / Path(f"frame%06d.png"%(i+1)) )
 
-def compute_flows_projection(
-        depth_map: Float[Tensor, "height width"],
-        prev_camera: Camera,
-        curr_camera: Camera,
-) -> Float[Tensor, "height width vu=2"]:
-    """Compute flow by un-projecting and reprojecting depth in next frame.
-    """
-    H_trgt, W_trgt = depth_map.size()
-    HW = pixel_grid_coordinates(H_trgt, W_trgt)
-    pixel_coordinates = rearrange(HW, 'h w c -> c (h w)')
-    depths = rearrange(depth_map, 'h w -> 1 (h w)')
-
-    # Un-project depths to world and project back in next frame.
-    world_pts = prev_camera.pixel_to_world(pixel_coordinates, depths=depths)
-    pixel_coordinates_warped, _ = curr_camera.world_to_pixel(world_pts)
-
-    # Compute flows.
-    HW_warped = rearrange(pixel_coordinates_warped, 'c (h w) -> h w c', h=H_trgt, w=W_trgt)
-    flow = (HW_warped - HW).to(torch.float32)
-
-    # Normalize flow.
-    hw = torch.tensor((H_trgt, W_trgt), dtype=torch.float32)
-    flow = flow / hw[None,None,:]
-
-    # Swap to flow indexing uv -> vu to match flowmap
-    flow = flow[:,:,[1,0]]
-
-    return flow
-
-def compute_flows_projection(
-        depth_map: Float[Tensor, "height width"],
-        prev_camera: Camera,
-        curr_camera: Camera,
-) -> Float[Tensor, "height width vu=2"]:
-    """Compute flow by un-projecting and reprojecting depth in next frame.
-    """
-    H_trgt, W_trgt = depth_map.size()
-    HW = pixel_grid_coordinates(H_trgt, W_trgt)
-    pixel_coordinates = rearrange(HW, 'h w c -> c (h w)')
-    depths = rearrange(depth_map, 'h w -> 1 (h w)')
-
-    # Un-project depths to world and project back in next frame.
-    world_pts = prev_camera.pixel_to_world(pixel_coordinates, depths=depths)
-    pixel_coordinates_warped, _ = curr_camera.world_to_pixel(world_pts)
-
-    # Compute flows.
-    HW_warped = rearrange(pixel_coordinates_warped, 'c (h w) -> h w c', h=H_trgt, w=W_trgt)
-    flow = (HW_warped - HW).to(torch.float32)
-
-    # Normalize flow.
-    hw = torch.tensor((H_trgt, W_trgt), dtype=torch.float32)
-    flow = flow / hw[None,None,:]
-
-    # Swap to flow indexing uv -> vu to match flowmap
-    flow = flow[:,:,[1,0]]
-
-    return flow
-
-def compute_consistency_mask(
-    src_frame: Float[Tensor, "3 height width"],
-    trgt_frame: Float[Tensor, "3 height width"],
-    flow: Float[Tensor, "height width vu=2"],
-) -> Float[Tensor, "height width"]:
-    
-    # My way
-    _, H, W = src_frame.shape
-    # warped_image = warp_image_flow(src_frame, fwd_flow)
-    # deltas = (source - warped_image).abs().max(dim=1).values
-
-    # David's way
-    b = 1
-    f = 2
-    flow = flow[None,None,:,:,:]
-    src_frames = src_frame[None,:,:,:]
-    trgt_frames = trgt_frame[None,:,:,:]
-    source_xy, _ = sample_image_grid((H, W))
-    target_xy = source_xy + rearrange(flow, "b f h w xy -> (b f) h w xy")
-
-    # Gets target pixel for every source pixel warped with flow.
-    target_pixels = F.grid_sample(
-        trgt_frames,
-        target_xy * 2 - 1,
-        mode="bilinear",
-        padding_mode="zeros",
-        align_corners=False,
-    ) #((bf) c h w)
-
-    # Map pixel color differences to mask weights.
-    deltas = (src_frames - target_pixels).abs().max(dim=1).values #((bf) h w)
-    mask = rearrange((1 - deltas) ** 8, "(b f) h w -> b f h w", b=b, f=f - 1)
-    return mask.squeeze()
-
-
 def preprocess_flow_projection(
     scene_path: Path,
-    resolution: list[int,int]
+    resolution: list[int,int],
+    stride: int = 1
 ) -> tuple[
     Float[Tensor, "batch 3 height width"],
     Float[Tensor, "pair height width xy=2"],
@@ -177,10 +92,12 @@ def preprocess_flow_projection(
     # Get depth paths.
     depth_file_folder_path = scene_path / "depth_exr"
     depth_files = [Path(p) for p in sorted(glob.glob(os.path.join(depth_file_folder_path, f"*.exr")))]
+    # depth_files = depth_files[::stride]
 
     # Get rgb paths.
     rgb_file_folder_path = Path(scene_path / "rgb")
     rgb_files = [Path(p) for p in sorted(glob.glob(os.path.join(rgb_file_folder_path, "*.png")))]
+    # rgb_files = rgb_files[::stride]
 
     # Load intrinsics.
     intrinsics_file = scene_path / "intrinsics.txt"
@@ -214,6 +131,7 @@ def preprocess_flow_projection(
     c2ws = np.loadtxt(extrinsics_file)
     c2ws = torch.from_numpy(c2ws.reshape((-1,4,4)))
     w2cs = torch.linalg.inv(c2ws)
+    # w2cs = w2cs[::stride]
 
     # Create cameras.
     cameras = [
@@ -227,14 +145,14 @@ def preprocess_flow_projection(
     fwd_flows, bwd_flows = list(), list()
     fwd_masks, bwd_masks = list(), list()
     frames = list()
-    for idx in tqdm(range(0, len(depth_files) - 1, 1)):
+    for idx in tqdm(range(0, len(depth_files) - 1, stride)):
 
         prev_camera = cameras[idx]
-        curr_camera = cameras[idx+1]
+        curr_camera = cameras[idx + stride]
 
         # Load and resize depth maps.
         depth_pixels_prev = load_exr(depth_files[idx])
-        depth_pixels_curr = load_exr(depth_files[idx+1])
+        depth_pixels_curr = load_exr(depth_files[idx + stride])
         depth_pixels_prev = transforms.functional.resize(
             depth_pixels_prev, 
             [H_trgt, W_trgt],
@@ -257,15 +175,15 @@ def preprocess_flow_projection(
         trgt_image = trgt_image / 255
         
         # Compute flows.
-        fwd_flow = compute_flows_projection(
-            depth_map=depth_pixels_prev,
-            prev_camera=prev_camera,
-            curr_camera=curr_camera
+        fwd_flow = compute_flow_projection(
+            src_depth_map=depth_pixels_prev,
+            src_camera=prev_camera,
+            trgt_camera=curr_camera
         )
-        bwd_flow = compute_flows_projection(
-            depth_map=depth_pixels_curr,
-            prev_camera=curr_camera,
-            curr_camera=prev_camera,
+        bwd_flow = compute_flow_projection(
+            src_depth_map=depth_pixels_curr,
+            src_camera=curr_camera,
+            trgt_camera=prev_camera,
         )
 
         # Compute consistency masks.
@@ -277,8 +195,9 @@ def preprocess_flow_projection(
         fwd_masks.append(fwd_mask)
         bwd_masks.append(bwd_mask)
         frames.append(src_image)
-        if idx == len(depth_files) - 2:
-            frames.append(trgt_image)
+
+    
+    frames.append(trgt_image)
 
     # Concatenate everything
     frames = torch.stack(frames, dim=0) # (frame, 3, h, w)
@@ -298,6 +217,7 @@ def preprocess_rooms_projection(cfg: DictConfig) -> None:
     # Saving paths.
     root = Path(cfg["data"]["root"])
     scenes = cfg["data"]["scenes"]
+    stride = cfg["data"]["stride"]
 
     H, W = cfg['data']["image_shape"][0], cfg["data"]["image_shape"][1]
 
@@ -314,14 +234,16 @@ def preprocess_rooms_projection(cfg: DictConfig) -> None:
 
     print(scenes)
     print('')
+    print(stride)
+    assert False
 
     for scene in scenes:
         print(scene)
         scene_path = root / scene
 
         # Compute and save flow.
-        frames, flows_fwd, flows_bwd, flows_fwd_mask, flows_bwd_mask = preprocess_flow_projection(scene_path, (H, W))
-        dump_rooms(frames, flows_fwd, flows_bwd, flows_fwd_mask, flows_bwd_mask, scene_path)
+        frames, flows_fwd, flows_bwd, flows_fwd_mask, flows_bwd_mask = preprocess_flow_projection(scene_path, (H, W), stride=stride)
+        dump_rooms(frames, flows_fwd, flows_bwd, flows_fwd_mask, flows_bwd_mask, scene_path, stride)
  
 if __name__ == "__main__":
     preprocess_rooms_projection()
