@@ -2,8 +2,6 @@ target: ldm.models.diffusion.ddpm_diffmap.DDPMDiffmap
 
 # Image resolution for sampling.
 image_size: 64
-
-base_learning_rate: 1.0e-04
 params:
   linear_start: 0.00085
   linear_end: 0.0120

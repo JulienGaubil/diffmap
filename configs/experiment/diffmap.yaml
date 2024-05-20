@@ -5,7 +5,7 @@ defaults:
   - /data: rooms
   - /diffusion_model@model: ddpm
   - /diffusion_model/model@model.params.unet_config: unet
-  - /diffusion_model/scheduler@model.params.scheduler_config: linear
+  - /diffusion_model/scheduler@model.params.scheduler_config: linear_decrease
   - /diffusion_model/loss@model.params.flowmap_loss_config: flowmap # flowmap loss config
 
 # Overrides image size in data and model children configs.

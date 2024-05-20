@@ -2,7 +2,6 @@
 
 defaults:
   - override /data: rooms
-  - override /diffusion_model/scheduler@model.params.scheduler_config: step
   - override /diffusion_model@model: ldm
 
 

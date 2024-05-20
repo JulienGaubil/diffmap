@@ -1,4 +1,5 @@
 target: ldm.lr_scheduler.LambdaLinearScheduler
+base_learning_rate: 1.0e-04
 params:
   warm_up_steps: [0, 0]
   cycle_lengths: [3000, 10000000000000] # incredibly large number to prevent corner cases

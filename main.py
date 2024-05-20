@@ -457,7 +457,9 @@ def run(config: DictConfig) -> None:
             rank_zero_print("datasets not yet initialized.")
 
         # configure learning rate
-        bs, base_lr = config.data.params.batch_size, config.model.base_learning_rate
+        bs = config.data.params.batch_size
+        scheduler_config = config.model.params.get('scheduler_config', {})
+        base_lr = scheduler_config.get('base_learning_rate', 1e-04) if scheduler_config is not None else 1e-04
         if not cpu:
             ngpu = len(config.lightning.trainer.gpus)
         else:
