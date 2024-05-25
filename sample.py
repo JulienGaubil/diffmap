@@ -5,19 +5,25 @@ import torch
 import torchvision
 import hydra
 import pytorch_lightning as pl
+import json
+import copy
 
 from packaging import version
+from typing import Any
 from jaxtyping import Float
 from torch import Tensor
 from omegaconf import OmegaConf, DictConfig
 from torch.utils.data import random_split, DataLoader, Dataset, Subset
 from functools import partial
 from PIL import Image
-from einops import rearrange
+from einops import rearrange, repeat
 from torchvision.utils import save_image
 from tqdm import tqdm
 from flow_vis_torch import flow_to_color
 from pathlib import Path
+from itertools import product
+from functools import reduce
+from operator import getitem
 
 from pytorch_lightning import seed_everything
 from pytorch_lightning.trainer import Trainer
@@ -26,9 +32,11 @@ from pytorch_lightning.utilities import rank_zero_only
 from pytorch_lightning.utilities import rank_zero_info
 
 from ldm.misc.util import instantiate_from_config, modify_conv_weights
-from ldm.data.utils.camera import pixel_grid_coordinates, to_euclidean_space, to_projective_space
 from ldm.modules.flowmap.visualization.depth import color_map_depth
 from ldm.modules.flowmap.visualization.color import apply_color_map_to_image
+from ldm.data.utils.camera import pixel_grid_coordinates, to_euclidean_space, to_projective_space, Camera, K_to_intrinsics, Extrinsics
+from ldm.visualization import filter_depth
+from ldm.modules.flowmap.flow.flow_predictor import Flows
 
 MULTINODE_HACKS = False
 
@@ -36,122 +44,219 @@ MULTINODE_HACKS = False
 def rank_zero_print(*args):
     print(*args)
 
-# def get_parser(**parser_kwargs):
-#     def str2bool(v):
-#         if isinstance(v, bool):
-#             return v
-#         if v.lower() in ("yes", "true", "t", "y", "1"):
-#             return True
-#         elif v.lower() in ("no", "false", "f", "n", "0"):
-#             return False
-#         else:
-#             raise argparse.ArgumentTypeError("Boolean value expected.")
 
-#     parser = argparse.ArgumentParser(**parser_kwargs)
-#     parser.add_argument(
-#         "--finetune_from",
-#         type=str,
-#         nargs="?",
-#         default="",
-#         help="path to checkpoint to load model state from"
-#     )
-#     parser.add_argument(
-#         "-n",
-#         "--name",
-#         type=str,
-#         const=True,
-#         default="",
-#         nargs="?",
-#         help="postfix for logdir",
-#     )
-#     parser.add_argument(
-#         "-r",
-#         "--resume",
-#         type=str,
-#         const=True,
-#         default="",
-#         nargs="?",
-#         help="resume from logdir or checkpoint in logdir",
-#     )
-#     parser.add_argument(
-#         "-b",
-#         "--base",
-#         nargs="*",
-#         metavar="base_config.yaml",
-#         help="paths to base configs. Loaded from left-to-right. "
-#              "Parameters can be overwritten or added with command-line options of the form `--key value`.",
-#         default=list(),
-#     )
-#     parser.add_argument(
-#         "-t",
-#         "--train",
-#         type=str2bool,
-#         const=True,
-#         default=False,
-#         nargs="?",
-#         help="train",
-#     )
-#     parser.add_argument(
-#         "--no-test",
-#         type=str2bool,
-#         const=True,
-#         default=False,
-#         nargs="?",
-#         help="disable test",
-#     )
-#     parser.add_argument(
-#         "-p",
-#         "--project",
-#         help="name of new or path to existing project"
-#     )
-#     parser.add_argument(
-#         "-d",
-#         "--debug",
-#         type=str2bool,
-#         nargs="?",
-#         const=True,
-#         default=False,
-#         help="enable post-mortem debugging",
-#     )
-#     parser.add_argument(
-#         "-s",
-#         "--seed",
-#         type=int,
-#         default=23,
-#         help="seed for seed_everything",
-#     )
-#     parser.add_argument(
-#         "-f",
-#         "--postfix",
-#         type=str,
-#         default="",
-#         help="post-postfix for default name",
-#     )
-#     parser.add_argument(
-#         "-l",
-#         "--logdir",
-#         type=str,
-#         default="logs",
-#         help="directory for logging dat shit",
-#     )
-#     parser.add_argument(
-#         "--scale_lr",
-#         type=str2bool,
-#         nargs="?",
-#         const=True,
-#         default=True,
-#         help="scale base-lr by ngpu * batch_size * n_accumulate",
-#     )
-#     return parser
+def print_tensor_dict(dictionnary: dict, root: bool = True) -> dict:
+    if root:
+        tmp_dict = copy.deepcopy(dictionnary)
+    else:
+        tmp_dict = dictionnary
+
+    for k, v in tmp_dict.items():
+        # Recursively parse dict.
+        if isinstance(v, dict):
+            print_tensor_dict(v, root=False)
+        # Modify values to be suitable for print.
+        elif isinstance(v, (Tensor,np.ndarray)):
+            tmp_dict[k] = v.shape
+        elif isinstance(v,list):
+            if all([isinstance(s, (Tensor, np.ndarray)) for s in v]):
+                tmp_dict[k] = [s.shape for s in v]
+            elif all([isinstance(s, Camera) for s in v]):
+                tmp_dict[k] = [f'cam_{i}' for i in range(len(v))]
+
+    if root:
+        print(json.dumps(tmp_dict, indent=4))
 
 
-# def nondefault_trainer_args(opt):
-#     parser = argparse.ArgumentParser()
-#     parser = Trainer.add_argparse_args(parser)
-#     args = parser.parse_args([])
-#     return sorted(k for k in vars(args) if getattr(opt, k) != getattr(args, k))
 
 
+def prepare_visualization(value: Any, keys: list[str]) -> Float[Tensor, "batch height width 3"]:
+
+    if 'depths' in keys:
+        value, _ = filter_depth(value)
+        images = color_map_depth(value)
+        images = rearrange(images, 'n c h w -> n h w c')
+    elif 'flows' in keys:
+        if 'forward_mask' in keys or 'backward_mask' in keys:
+            images = repeat(value.float(), 'n h w -> n h w c', c=3)
+        else:
+            images = [flow_to_color(rearrange(value[k], 'h w xy -> xy h w')) / 255 for k in range(value.shape[0])]
+            images = torch.stack(images, dim=0)
+            images = rearrange(images, 'n c h w -> n h w c')
+    elif 'correspondence_weights' in keys:
+        images = apply_color_map_to_image(value, "gray")
+        images = rearrange(images, 'n c h w -> n h w c')
+    else:
+        images = value
+    
+    assert images.max() <= 1, f'{images.max()}'
+    return images
+    
+
+def process_value(value: Any, keys: list[str]) -> Any:
+    '''Preprocess logged values according to the modality.
+    '''
+    if value is not None:
+        if isinstance(value, Tensor):
+            value = value.cpu()
+        if 'rgbs' in keys:
+            # (b h w c)
+            value = torch.clamp(value, -1., 1.)
+            value = (value + 1.0) / 2.0
+            if value.size(1) == 3:
+                value = rearrange(value, 'b c h w -> b h w c')
+        elif 'depths' in keys:
+            # (b h w)
+            if len(value.shape) == 4:
+                if value.size(-1) == 3:
+                    value = value.mean(-1)
+                elif value.size(1) == 3:
+                    value = value.mean(1)
+                else:
+                    value = value.squeeze()
+                    if len(value.shape) == 2:
+                        value = value.unsqueeze(0)
+            print(0.1, keys, value.shape)
+        
+        elif 'flows' in keys:
+            if 'forward' in keys or 'backward' in keys:
+                # (b h w xy=2)
+                if value.size(-1) == 3:
+                    value = value[...,:2]
+                elif value.size(1) == 3:
+                    value = value[:,:2]
+                    value = rearrange(value, 'b xy h w -> b h w xy')
+                value = value * 0.0213
+        return value
+    return None
+
+
+def get_keys(modality: str) -> tuple[list[str],list[str]]:
+
+    if modality in ['rgbs', 'depths']:
+        log_dict_keys_list = list(product(['gt', 'sampled'], ['ctxt', 'trgt'], [modality])) # e.g. ('gt', 'trgt', modality)
+
+        if modality == 'rgbs':
+            # TODO - do properly without assuming a log structure.
+            batch_logs_keys_list = [('conditioning', 'concat'), ('trgt', 'inputs')] #keys for gt
+            batch_logs_keys_list.extend([(), ('trgt', 'samples')]) #keys for samples
+        elif modality == 'depths':
+            batch_logs_keys_list = list(product(['inputs', 'samples'],['depth_ctxt', 'depth_trgt']))
+            batch_logs_keys_list = [(k2,k1) for k1,k2 in batch_logs_keys_list] # e.g. ('depth_ctxt', 'samples')
+
+    elif modality == 'flows':
+        log_dict_keys_list = list(product(['gt', 'sampled'], [modality], ['forward', 'backward', 'forward_mask', 'backward_mask'])) # e.g. ('sampled', 'flows', 'forward_mask')
+        batch_logs_keys_list = [('optical_flow', 'inputs'), (), (), ()] #keys for gt
+        batch_logs_keys_list.extend([('optical_flow', 'samples'), (), (), ()]) #keys for samples        
+
+    else:
+        raise Exception('Modality not recognized, should be "flows", "rgbs" or "depths".')
+
+
+    assert len(log_dict_keys_list) == len(batch_logs_keys_list)
+    log_dict_keys_list = [list(keys) for keys in log_dict_keys_list]
+    batch_logs_keys_list = [list(keys) for keys in batch_logs_keys_list]
+
+    return log_dict_keys_list, batch_logs_keys_list
+
+
+def get_value(dictionnary, keys: list[str] | str) -> Any:
+    """Get value from a nested dict given a list of keys.
+    """
+    if isinstance(keys, str):
+        keys = [keys]
+    
+    if len(keys) > 0:
+        tmp_dict = dictionnary
+        for key in keys:
+            try:
+                tmp_dict = tmp_dict[key]
+            except KeyError:
+                return None
+        return tmp_dict
+    else:
+        return None
+    
+
+def default_set(
+    dictionnary: dict,
+    keys: list[str] | str,
+    value: Any
+) -> None:
+    # Replace value in dict.
+    if get_value(dictionnary,keys) is not None:
+        if len(keys) > 1:
+            tmp_dict = get_value(dictionnary, keys[:-1])
+            tmp_dict[keys[-1]] = value
+        else:
+            dictionnary[keys[-1]] = value
+        return None
+    # Put value in dict.
+    elif value is not None and len(keys) > 0:
+        tmp_dict = dictionnary
+
+        for i, key in enumerate(keys):
+            try:
+                tmp_dict = tmp_dict[key]
+            except KeyError:
+                # Create dict if not final key.
+                if i < len(keys) -1:
+                    tmp_dict[key] = dict()
+                    tmp_dict = tmp_dict[key]
+                # Initiate leaf list and exits.
+                else:
+                    tmp_dict[key] = value
+
+def default_add(
+    dictionnary: dict,
+    keys: list[str] | str,
+    value: Any,
+    operation: str = "append" #defines operation to perform, either set, append or extend
+) -> None:
+    """Append a value in a nested dict whose final values are lists given keys.
+    """
+    if isinstance(keys, str):
+        keys = [keys]
+    
+    if value is not None and len(keys) > 0:
+        tmp_dict = dictionnary
+
+        for i, key in enumerate(keys):
+            try:
+                tmp_dict = tmp_dict[key]
+            except KeyError:
+                # Create dict if not final key.
+                if i < len(keys) -1:
+                    tmp_dict[key] = dict()
+                    tmp_dict = tmp_dict[key]
+                # Initiate leaf list and exits.
+                else:
+                    if operation == "append":
+                        tmp_dict[key] = [value]
+                    elif operation == "extend":
+                        tmp_dict[key] = value
+                    return None
+
+        # Extend leaf list.
+        if operation == "append":
+            tmp_dict.append(value)
+        elif operation == "extend":
+            assert isinstance(value, list)
+            tmp_dict.extend(value)
+        else:
+            raise Exception('Operation not recognized, should be "append" or "extend".')
+        return None
+
+def default_log(logs_dict: dict, modality: str, batch_logs: dict) -> None:
+
+    log_dict_keys_list, batch_logs_keys_list = get_keys(modality)
+
+    for keys_logs_dict, keys_batch_logs in zip(log_dict_keys_list, batch_logs_keys_list):
+        value = get_value(batch_logs, keys_batch_logs)
+        if 'depths' in keys_logs_dict:
+            print(0.02, value.shape)
+        value = process_value(value, keys_logs_dict)
+        default_add(dictionnary=logs_dict, keys=keys_logs_dict, value=value)    
 
 
 @hydra.main(
@@ -373,506 +478,600 @@ def sample(config: DictConfig) -> None:
     os.makedirs(viz_path_videos, exist_ok=True)
     os.makedirs(viz_path_pc, exist_ok=True)
 
-    out = {
-        "flows": {'fwd_flow_gt': [], 'fwd_flow_sampled': []},
-        "rgbs": {
-            'ctxt_rgb_gt': [],
-            'trgt_rgb_gt': [],
-            'trgt_rgb_sampled': []
-        },
-        "depths": {
-            'ctxt_depth_gt': [],
-            'ctxt_depth_sampled': [],
-            'trgt_depth_gt': [],
-            'trgt_depth_sampled': [] 
-        }
-    }
-
-
-    # Create output.
-    out_ = dict()
-    for k in ['gt', 'sampled']:
-        out_[k] = dict()
-        for frame in ['ctxt', 'trgt']:
-            out_[k][frame] = dict()
-            for modality in ['rgb', 'depth']:
-                if not (k == 'sampled' and 'frame' == 'ctxt' and modality == 'rb'):
-                    out_[k][frame][modality] = []
-        out_[k]['optical_flow'] = []
-
-    outputs = dict()
-    cameras = []
+    depths_flowmap = dict()
+    points_visualization = dict()
+    logs = dict()
     for i, batch in tqdm(enumerate(dataloader_val)):
-        print(f'Frame indices val batch {i} : ', batch['indices'])
-        ########### jg: New sampling ################
 
-        cameras += [(batch['camera_ctxt'][k], batch['camera_trgt'][k]) for k in range(len(batch['camera_trgt']))]
+        if i < 2:
+            print(f'Frame indices val batch {i} : ', batch['indices'])
 
-        log_image_kwargs = config.lightning.callbacks.image_logger.params.log_images_kwargs
-        log = model.log_images(
-            batch,
-            **log_image_kwargs
-        )
-        # print(1, log.keys())
+            # Sample model.
+            log_image_kwargs = config.lightning.callbacks.image_logger.params.log_images_kwargs
+            batch_logs = model.log_images(
+                batch,
+                **log_image_kwargs
+            )
+            print(1, batch_logs.keys())
+            print(1.1, batch_logs['depth_trgt']['inputs'].shape)
+            print(1.2, batch_logs['depth_ctxt']['inputs'].shape)
 
-        if i > 0:
-            for modality, logs_modality in log.items():
-                for key, data in logs_modality.items():
-                    outputs[modality][key] = torch.cat([outputs[modality][key].cpu(), data.cpu()], dim=0)
-        else:
-            outputs = log
+            ############### Flowmap related ################
+
+            # Get flowmap inputs.
+            if 'depth_ctxt' in batch_logs and 'depth_trgt' in batch_logs:
+                x, c, flows_input, _  = model.get_input(batch, model.first_stage_key, return_flows_depths=True)
+
+                bs, H, W = batch_logs['depth_ctxt']['samples'].squeeze(1).size()
+
+                print(0.01, batch_logs['depth_ctxt']['inputs'].shape)
+
+                # Add gt and sampled depth.
+                default_log(logs_dict=logs, modality='depths', batch_logs=batch_logs)
+
+                # default_add(logs, ['sampled','ctxt','depths'], batch_logs['depth_ctxt']['samples'].squeeze(1))
+                # default_add(logs, ['sampled','trgt','depths'], batch_logs['depth_trgt']['samples'].squeeze(1))
+
+                # Get flows for context and target streams.
+                print(2.21, flows_input.forward.shape, flows_input.backward.shape, flows_input.forward_mask.shape, flows_input.backward_mask.shape)
+                id_start_ctxt, id_end_ctxt = 0, bs
+                id_start_trgt, id_end_trgt = 0, bs
+                if i == 0:
+                    # Skip flow for first pair for trgt stream.
+                    id_start_trgt = 1
+                elif i == len(dataloader_val) - 1:
+                    # Skip flow for last pair for ctxt stream.
+                    id_end_ctxt = bs - 1
+
+                # Add correspondence weights.
+                default_add(logs, ['sampled','ctxt','correspondence_weights'], torch.ones(id_end_ctxt - id_start_ctxt, H, W))
+                default_add(logs, ['sampled','trgt','correspondence_weights'], torch.ones(id_end_trgt - id_start_trgt, H, W))
+                default_add(logs, ['gt','ctxt','correspondence_weights'], torch.ones(id_end_ctxt - id_start_ctxt, H, W))
+                default_add(logs, ['gt','trgt','correspondence_weights'], torch.ones(id_end_trgt - id_start_trgt, H, W))
+                
+                # Add gt flow.
+                default_add(logs, ['gt','flows','backward'], flows_input.backward.squeeze(1).cpu() * 0.0213) # (frame h w xy=2)
+                default_add(logs, ['gt','flows','forward_mask'], flows_input.forward_mask.squeeze(1).cpu()) # (frame h w)
+                default_add(logs, ['gt','flows','backward_mask'], flows_input.backward_mask.squeeze(1).cpu())
+
+
+                # default_add(logs, ['gt','flows','forward'], flows_input.forward[id_start_ctxt:id_end_ctxt,0,:,:,:].cpu() * 0.0213)
+                # default_add(logs, ['gt','flows','forward',], flows_input.forward[id_start_trgt:id_end_trgt, 0,:,:,:].cpu() * 0.0213)
+                # default_add(logs, ['gt','flows','backward'], flows_input.backward[id_start_ctxt:id_end_ctxt,0,:,:,:].cpu() * 0.0213)
+                # default_add(logs, ['gt','flows','backward'], flows_input.backward[id_start_trgt:id_end_trgt, 0,:,:,:].cpu() * 0.0213)
+                # default_add(logs, ['gt','flows','forward_mask'], flows_input.forward_mask[id_start_ctxt:id_end_ctxt,0,:,:].cpu())
+                # default_add(logs, ['gt','flows','forward_mask'], flows_input.forward_mask[id_start_trgt:id_end_trgt, 0,:,:].cpu())
+                # default_add(logs, ['gt','flows','backward_mask'], flows_input.backward_mask[id_start_ctxt:id_end_ctxt,0,:,:].cpu())
+                # default_add(logs, ['gt','flows','backward_mask'], flows_input.backward_mask[id_start_trgt:id_end_trgt, 0,:,:].cpu())
+
+                # Add gt camera intrinsics.
+                default_add(logs,['gt','ctxt','cameras'], batch['camera_ctxt'], operation="extend")
+                default_add(logs,['gt','trgt','cameras'], batch['camera_trgt'], operation="extend")
+
+                print(2.31, len(get_value(logs, ['gt','ctxt','cameras'])))
+                # print(2.311, get_value(logs, ['gt','ctxt','cameras']))
+                print(2.32, len(get_value(logs, ['gt','trgt','cameras'])))
+                # print(2.321, get_value(logs, ['gt','trgt','cameras']))
+
+            ############## Logging code #################
+
+            # Add gt and sampled flows and rgbs.
+            default_log(logs_dict=logs, modality='rgbs', batch_logs=batch_logs)
+            default_log(logs_dict=logs, modality='flows', batch_logs=batch_logs)
             
 
-        # Log flows.
-        out['flows']['fwd_flow_gt'].append(log['optical_flow']['inputs'].cpu())
-        out['flows']['fwd_flow_sampled'].append(log['optical_flow']['samples'].cpu())
+            # # Logging for pointcloud. - TODO do again with default_add.
+            # if i > 0:
+            #     for modality, logs_modality in log.items():
+            #         for key, data in logs_modality.items():
+            #             outputs[modality][key] = torch.cat([outputs[modality][key].cpu(), data.cpu()], dim=0)
+            # else:
+            #     outputs = log
+                
+            # Loading for video visualization.
+
+            # # Log flows.
+            # if 'optical_flow' in log:
+                # default_add(out, ['flows', 'fwd_flow_gt'], log['optical_flow']['inputs'].cpu())
+                # default_add(out, ['flows', 'fwd_flow_sampled'], log['optical_flow']['samples'].cpu())
+                # default_add(out, ['flows', 'bwd_flows_gt'], rearrange(batch['optical_flow_bwd'], 'n h w c -> n c h w').cpu())
+                # print(type(batch['optical_flow_mask']), type(batch['optical_flow_bwd_mask']))
+                # assert False
+                # default_add(out, ['flows', 'fwd_flows_mask_gt'], batch['optical_flow_mask'].cpu())
+                # default_add(out, ['flows', 'bwd_flows_mask_gt'], batch['optical_flow_bwd_mask'].cpu())
+            
+            
+            # #Log rgbs.
+            # if 'conditioning' in log:
+            #     default_add(out, ['rgbs', 'ctxt_rgb_gt'], log['conditioning']['concat'].cpu())
+            # if 'trgt' in log:
+            #     default_add(out, ['rgbs', 'trgt_rgb_gt'], log['trgt']['inputs'].cpu())
+            #     default_add(out, ['rgbs', 'trgt_rgb_sampled'], log['trgt']['samples'].cpu())
+
+                
+            # # Log depths.
+            # if 'depth_ctxt' in log:
+            #     default_add(out, ['depths', 'ctxt_depth_sampled'], log['depth_ctxt']['samples'].cpu())
+            #     default_add(out, ['depths', 'ctxt_depth_gt'], log['depth_ctxt']['inputs'].cpu())
+            # if 'depth_trgt' in log:
+            #     default_add(out, ['depths', 'trgt_depth_sampled'], log['depth_ctxt']['samples'].cpu())
+            #     default_add(out, ['depths', 'trgt_depth_gt'], log['depth_ctxt']['inputs'].cpu())
+
+            # cameras += [(batch['camera_ctxt'][k], batch['camera_trgt'][k]) for k in range(len(batch['camera_trgt']))]
+
+
+
+    print_tensor_dict(logs)
+
+    # Concatenates all tensors.
+    for modality in ['rgbs', 'depths', 'flows']:
+        log_dict_keys_list, _ = get_keys(modality)
+        for keys in log_dict_keys_list:
+            value = get_value(logs, keys)
+            if value is not None:
+                print(keys, type(value))
+                value = torch.cat(value, dim=0)
+                default_set(dictionnary=logs, keys=keys, value=value)
+                print(keys, get_value(logs, keys).shape)
+                print('')
+    for keys in product(['gt','sampled'], ['ctxt','trgt'],['correspondence_weights']):
+        default_set(dictionnary=logs, keys=keys, value=torch.cat(get_value(logs, keys), dim=0))
+
+    if 'depth_ctxt' in batch_logs and 'depth_trgt' in batch_logs:
         
-        #Log rgbs.
-        out['rgbs']['ctxt_rgb_gt'].append(log['conditioning']['concat'].cpu())
-        out['rgbs']['trgt_rgb_gt'].append(log['trgt']['inputs'].cpu())
-        out['rgbs']['trgt_rgb_sampled'].append(log['trgt']['samples'].cpu())
+        for key in ['gt', 'sampled']:
+            flows_flowmap = dict()
+
+            # Create depths and correspondence weights inputs.
+            depths_flowmap = torch.stack([
+                get_value(logs, [key, 'ctxt', 'depths']),
+                get_value(logs, [key, 'trgt', 'depths'])],
+                dim=0
+            ).to(model.device) # (batch=2 frame height width) batch[0] = ctxt, batch[1] = trgt
+            
+            # ############# TODO remove depth filtering #################
+            if key == 'gt':
+                B, F, H, W = depths_flowmap.shape
+                # depths_flowmap = depths_flowmap / 512
+            depths_flowmap, valid_depths = filter_depth(depths_flowmap)
+
+
+            valid_depths = valid_depths.float().to(model.device)
+            correspondence_weights_flowmap = valid_depths[:,:-1,:,:] * valid_depths[:,1:,:,:] # both depth points should be valid
+            # default_add(logs, [key,'ctxt','correspondence_weights'], correspondence_weights_flowmap[0])
+            # default_add(logs, [key,'trgt','correspondence_weights'], correspondence_weights_flowmap[1])
+
+
+
+            # Create depths and correspondence weights inputs.
+            # correspondence_weights_flowmap = torch.stack([
+            #     get_value(logs, [key,'ctxt','correspondence_weights']),
+            #     get_value(logs, [key,'trgt','correspondence_weights'])],
+            #     dim=0
+            # ).to(model.device) # (batch=2 pair=frame-1 height width) batch[0] = ctxt, batch[1] = trgt
+            # depths_flowmap = torch.stack([
+            #     get_value(logs, [key, 'ctxt', 'depths']),
+            #     get_value(logs, [key, 'trgt', 'depths'])],
+            #     dim=0
+            # ).to(model.device) # (batch=2 frame height width) batch[0] = ctxt, batch[1] = trgt
+
+            # Create flows inputs.
+            for keys in ['forward', 'backward','forward_mask','backward_mask']:
+                flows_flowmap[keys] = torch.stack([
+                    get_value(logs, ['gt','flows',keys])[:-1],
+                    get_value(logs, ['gt','flows',keys])[1:]],
+                    dim=0
+                ).to(model.device)
+            flows_flowmap = Flows(**flows_flowmap)
+
+            print(2.4, depths_flowmap.shape)
+            print(2.45, correspondence_weights_flowmap.shape)
+            print(2.5, flows_flowmap.forward.shape, flows_flowmap.backward.shape, flows_flowmap.forward_mask.shape, flows_flowmap.backward_mask.shape)
+
+
+            # Create a dummy video batch.
+            B, F, H, W = depths_flowmap.shape
+            P_flow = flows_flowmap.forward.size(1)
+            P_corr = correspondence_weights_flowmap.size(1)
+            assert F - 1 == P_flow == P_corr
+            dummy_flowmap_batch = {
+                "videos": torch.zeros((B, F, 3, H, W), dtype=torch.float32, device=model.device),
+                "indices": torch.stack([
+                        torch.arange(F, device=model.device),
+                        torch.arange(1, F+1, device=model.device)],
+                    dim=0
+                ),
+                "scenes": [""],
+                "datasets": [""],
+            }
+            if 'camera_ctxt' in batch and 'camera_trgt' in batch:
+                intrinsics_flowmap = torch.stack([
+                    torch.stack([cam.K for cam in get_value(logs, ['gt','ctxt','cameras'])], dim=0).float(),
+                    torch.stack([cam.K for cam in get_value(logs, ['gt','trgt','cameras'])], dim=0).float()],
+                    dim=0
+                ).to(model.device) # (batch=2 frame 3 3) batch[0] = ctxt, batch[1] = trgt
+                intrinsics_flowmap[:,:,:2,:3] = intrinsics_flowmap[:,:,:2,:3] / H
+                dummy_flowmap_batch['intrinsics'] = intrinsics_flowmap
+
+            print(2.7, dummy_flowmap_batch["videos"].shape, dummy_flowmap_batch["indices"].shape, dummy_flowmap_batch['intrinsics'].shape)
+
+            # Compute Flowmap output for full sequence.
+            _, flowmap_output = model.flowmap_loss_wrapper(
+                dummy_flowmap_batch,
+                flows_flowmap,
+                depths_flowmap,
+                correspondence_weights_flowmap,
+                model.global_step,
+                return_outputs=True
+            )
+
+            # Convert depths to world points.
+
+
+            # ############### David ##############
+            # from ldm.modules.flowmap.model.projection import sample_image_grid
+            # from ldm.modules.flowmap.model.projection import unproject, homogenize_points
+            # from einops import einsum
+            # _, _, dh, dw = flowmap_output.depths.shape
+            # xy, _ = sample_image_grid((dh, dw), flowmap_output.extrinsics.device)
+            
+            # bundle_ctxt = zip(
+            #     flowmap_output.extrinsics[0],
+            #     flowmap_output.intrinsics[0],
+            #     flowmap_output.depths[0],
+            # )
+            # points_ctxt = []
+            # for extrinsics, intrinsics, depths in bundle_ctxt:
+            #     xyz = unproject(xy, depths, intrinsics)
+            #     xyz = homogenize_points(xyz)
+            #     xyz = einsum(extrinsics, xyz, "i j, ... j -> ... i")[..., :3]
+            #     points_ctxt.append(rearrange(xyz, "h w xyz -> (h w) xyz").detach().cpu().numpy())
+            # points_ctxt = np.stack(points_ctxt, axis=0)
+
+            # bundle_trgt = zip(
+            #     flowmap_output.extrinsics[1],
+            #     flowmap_output.intrinsics[1],
+            #     flowmap_output.depths[1],
+            # )
+            # points_trgt = []
+            # for extrinsics, intrinsics, depths in bundle_trgt:
+            #     xyz = unproject(xy, depths, intrinsics)
+            #     xyz = homogenize_points(xyz)
+            #     xyz = einsum(extrinsics, xyz, "i j, ... j -> ... i")[..., :3]
+            #     points_trgt.append(rearrange(xyz, "h w xyz -> (h w) xyz").detach().cpu().numpy())
+            # points_trgt = np.stack(points_trgt, axis=0)
+
+
+            # ############ My way - depth to world ##############
+            # H, W = flowmap_output.depths.shape[-2:]
+            # for k in range(flowmap_output.extrinsics.size(1)):
+                
+            #     # Create camera.
+            #     intrinsics_ctxt = K_to_intrinsics(flowmap_output.intrinsics[0,k].cpu(), [H,W])
+            #     intrinsics_trgt = K_to_intrinsics(flowmap_output.intrinsics[1,k].cpu(), [H,W])
+            #     w2c_ctxt = torch.linalg.inv(flowmap_output.extrinsics[0,k].cpu())
+            #     w2c_trgt = torch.linalg.inv(flowmap_output.extrinsics[1,k].cpu())
+            #     extrinsics_ctxt = Extrinsics(**{'R': w2c_ctxt[:3,:3], 't': w2c_ctxt[:3,3]})
+            #     extrinsics_trgt = Extrinsics(**{'R': w2c_trgt[:3,:3], 't': w2c_trgt[:3,3]})
+            #     camera_ctxt = Camera(intrinsics_ctxt, extrinsics_ctxt)
+            #     camera_trgt = Camera(intrinsics_trgt, extrinsics_trgt)
+                
+            #     # Project depth to world.
+            #     HW = pixel_grid_coordinates(H, W)
+            #     pixel_coordinates = rearrange(HW, 'h w c -> c (h w)')
+            #     depth_ctxt = rearrange(flowmap_output.depths[0,k].cpu(), 'h w -> 1 (h w)')
+            #     depth_trgt = rearrange(flowmap_output.depths[1,k].cpu(), 'h w -> 1 (h w)')
+
+            #     # Un-project to world coordinates.
+            #     world_pts_ctxt = camera_ctxt.pixel_to_world(pixel_coordinates, depths=depth_ctxt)
+            #     world_pts_trgt = camera_trgt.pixel_to_world(pixel_coordinates, depths=depth_trgt)
+            #     world_coordinates_ctxt = to_euclidean_space(world_pts_ctxt)
+            #     world_coordinates_trgt = to_euclidean_space(world_pts_trgt)
+
+            #     default_add(points_visualization, [key, 'ctxt', 'world_crds'], rearrange(world_coordinates_ctxt, 'c n -> n c'))
+            #     default_add(points_visualization, [key, 'trgt', 'world_crds'], rearrange(world_coordinates_trgt, 'c n -> n c'))
+
+            #     ############### Debug ##############
+
+            #     # # Debug - GT depths and poses.
+            #     # camera_ctxt = get_value(logs, ['gt','ctxt','cameras'])[k]
+            #     # camera_trgt = get_value(logs, ['gt','trgt','cameras'])[k]
+
+            #     # # Project depth to world.
+            #     # HW = pixel_grid_coordinates(H, W)
+            #     # pixel_coordinates = rearrange(HW, 'h w c -> c (h w)')
+            #     # depth_ctxt = rearrange(get_value(logs, ['gt','ctxt','depths'])[k], 'h w -> 1 (h w)')
+            #     # depth_trgt = rearrange(get_value(logs, ['gt','trgt','depths'])[k], 'h w -> 1 (h w)')
+
+            #     # # Un-project to world coordinates.
+            #     # world_pts_ctxt = camera_ctxt.pixel_to_world(pixel_coordinates, depths=depth_ctxt)
+            #     # world_pts_trgt = camera_trgt.pixel_to_world(pixel_coordinates, depths=depth_trgt)
+            #     # world_coordinates_ctxt = to_euclidean_space(world_pts_ctxt)
+            #     # world_coordinates_trgt = to_euclidean_space(world_pts_trgt)
+
+            #     # default_add(points_visualization, [key, 'ctxt', 'world_crds'], rearrange(world_coordinates_ctxt, 'c n -> n c'))
+            #     # default_add(points_visualization, [key, 'trgt', 'world_crds'], rearrange(world_coordinates_trgt, 'c n -> n c'))
+
+                
+            #     # #for debug only
+            #     # default_add(points_visualization, [key, 'ctxt', 'poses'], camera_ctxt.c2w)
+            #     # default_add(points_visualization, [key, 'trgt', 'poses'], camera_trgt.c2w)
+
+
+        
+            ############ My way - local to world ##############
+            H, W = flowmap_output.depths.shape[-2:]
+            for k in range(flowmap_output.extrinsics.size(1)):
+                
+                # Create camera.
+                intrinsics_ctxt = K_to_intrinsics(flowmap_output.intrinsics[0,k].cpu(), [H,W])
+                intrinsics_trgt = K_to_intrinsics(flowmap_output.intrinsics[1,k].cpu(), [H,W])
+                w2c_ctxt = torch.linalg.inv(flowmap_output.extrinsics[0,k].cpu())
+                w2c_trgt = torch.linalg.inv(flowmap_output.extrinsics[1,k].cpu())
+                extrinsics_ctxt = Extrinsics(**{'R': w2c_ctxt[:3,:3], 't': w2c_ctxt[:3,3]})
+                extrinsics_trgt = Extrinsics(**{'R': w2c_trgt[:3,:3], 't': w2c_trgt[:3,3]})
+                camera_ctxt = Camera(intrinsics_ctxt, extrinsics_ctxt)
+                camera_trgt = Camera(intrinsics_trgt, extrinsics_trgt)
+                
+                # Project local to world.
+                local_pts_ctxt = to_projective_space(rearrange(flowmap_output.surfaces[0,k,:,:,:].cpu(), 'h w xyz -> xyz (h w)'))
+                local_pts_trgt = to_projective_space(rearrange(flowmap_output.surfaces[1,k,:,:,:].cpu(), 'h w xyz -> xyz (h w)'))
+                world_coordinates_ctxt = to_euclidean_space(camera_ctxt.local_to_world(local_pts_ctxt))
+                world_coordinates_trgt = to_euclidean_space(camera_trgt.local_to_world(local_pts_trgt))
+
+                
+                # HW = pixel_grid_coordinates(H, W)
+                # pixel_coordinates = rearrange(HW, 'h w c -> c (h w)')
+                # depth_ctxt = rearrange(flowmap_output.depths[0,k].cpu(), 'h w -> 1 (h w)')
+                # depth_trgt = rearrange(flowmap_output.depths[1,k].cpu(), 'h w -> 1 (h w)')
+
+                # # Un-project to world coordinates.
+                # world_pts_ctxt = camera_ctxt.pixel_to_world(pixel_coordinates, depths=depth_ctxt)
+                # world_pts_trgt = camera_trgt.pixel_to_world(pixel_coordinates, depths=depth_trgt)
+                # world_coordinates_ctxt = to_euclidean_space(world_pts_ctxt)
+                # world_coordinates_trgt = to_euclidean_space(world_pts_trgt)
+
+                default_add(points_visualization, [key, 'ctxt', 'world_crds'], rearrange(world_coordinates_ctxt, 'c n -> n c'))
+                default_add(points_visualization, [key, 'trgt', 'world_crds'], rearrange(world_coordinates_trgt, 'c n -> n c'))
+
+
+
+
+
+            # # Store David.
+            # default_set(points_visualization, [key, 'ctxt', 'world_crds'], points_ctxt)
+            # default_set(points_visualization, [key, 'trgt', 'world_crds'], points_trgt)
+            # default_set(points_visualization, [key,'ctxt', 'rgb_crds'], rearrange(get_value(logs, ['gt','ctxt','rgbs']), 'f h w rgb -> f (h w) rgb').numpy())
+            # default_set(points_visualization, [key,'trgt', 'rgb_crds'], rearrange(get_value(logs, ['gt','trgt','rgbs']), 'f h w rgb -> f (h w) rgb').numpy())
+            # default_set(points_visualization, [key,'ctxt', 'poses'], flowmap_output.extrinsics[0].cpu().numpy())
+            # default_set(points_visualization, [key,'trgt', 'poses'], flowmap_output.extrinsics[1].cpu().numpy()) # cam-to-world
 
             
-        # Log depths.
-        out['depths']['ctxt_depth_sampled'].append(log['depth_ctxt']['samples'].cpu())
-        out['depths']['trgt_depth_sampled'].append(log['depth_trgt']['samples'].cpu())
-        out['depths']['ctxt_depth_gt'].append(log['depth_ctxt']['inputs'].cpu())
-        out['depths']['trgt_depth_gt'].append(log['depth_trgt']['inputs'].cpu())
+            
+            # Store my way.
+            default_set(
+                dictionnary=points_visualization,
+                keys=[key,'ctxt','world_crds'],
+                value=torch.stack(get_value(points_visualization, [key, 'ctxt', 'world_crds']), dim=0).numpy()
+            )
+            default_set(
+                dictionnary=points_visualization,
+                keys=[key,'trgt','world_crds'],
+                value=torch.stack(get_value(points_visualization, [key,'trgt','world_crds']), dim=0).numpy()
+            ) # (frame, hw, xyz=3)
+            default_set(points_visualization, [key,'ctxt', 'rgb_crds'], rearrange(get_value(logs, ['gt','ctxt','rgbs']), 'f h w rgb -> f (h w) rgb').numpy())
+            default_set(points_visualization, [key,'trgt', 'rgb_crds'], rearrange(get_value(logs, ['gt','trgt','rgbs']), 'f h w rgb -> f (h w) rgb').numpy())
+            default_set(points_visualization, [key,'ctxt', 'poses'], flowmap_output.extrinsics[0].cpu().numpy())
+            default_set(points_visualization, [key,'trgt', 'poses'], flowmap_output.extrinsics[1].cpu().numpy()) # cam-to-world
+
+
+            # # Store debug.
+            # default_set(
+            #     dictionnary=points_visualization,
+            #     keys=[key,'ctxt','world_crds'],
+            #     value=torch.stack(get_value(points_visualization, [key, 'ctxt', 'world_crds']), dim=0).numpy()
+            # )
+            # default_set(
+            #     dictionnary=points_visualization,
+            #     keys=[key,'trgt','world_crds'],
+            #     value=torch.stack(get_value(points_visualization, [key,'trgt','world_crds']), dim=0).numpy()
+            # ) # (frame, hw, xyz=3)
+            # default_set(points_visualization, [key,'ctxt', 'rgb_crds'], rearrange(get_value(logs, ['gt','ctxt','rgbs']), 'f h w rgb -> f (h w) rgb').numpy())
+            # default_set(points_visualization, [key,'trgt', 'rgb_crds'], rearrange(get_value(logs, ['gt','trgt','rgbs']), 'f h w rgb -> f (h w) rgb').numpy())
+            # default_set(
+            #     dictionnary=points_visualization,
+            #     keys=[key,'ctxt','poses'],
+            #     value=torch.stack(get_value(points_visualization, [key,'ctxt','poses']), dim=0).numpy()
+            # )
+            # default_set(
+            #     dictionnary=points_visualization,
+            #     keys=[key,'trgt','poses'],
+            #     value=torch.stack(get_value(points_visualization, [key,'trgt','poses']), dim=0).numpy()
+            # )
 
 
 
-    print('Shapes default collage')
-    for modality, logs_modality in outputs.items():
-        for k, data in logs_modality.items():
-            print(modality, k, data.shape)
 
-    print('')
-    print('Manual shapes')
+            # # Store old way (surfaces).
+            # default_set(points_visualization, [key, 'ctxt', 'world_crds'], rearrange(flowmap_output.surfaces[0], 'f h w xyz -> f (h w) xyz').cpu().numpy())
+            # default_set(points_visualization, [key, 'trgt', 'world_crds'], rearrange(flowmap_output.surfaces[1], 'f h w xyz -> f (h w) xyz').cpu().numpy())
+            # default_set(points_visualization, [key,'ctxt', 'rgb_crds'], rearrange(get_value(logs, ['gt','ctxt','rgbs']), 'f h w rgb -> f (h w) rgb').numpy())
+            # default_set(points_visualization, [key,'trgt', 'rgb_crds'], rearrange(get_value(logs, ['gt','trgt','rgbs']), 'f h w rgb -> f (h w) rgb').numpy())
+            # default_set(points_visualization, [key,'ctxt', 'poses'], flowmap_output.extrinsics[0].cpu().numpy())
+            # default_set(points_visualization, [key,'trgt', 'poses'], flowmap_output.extrinsics[1].cpu().numpy()) # cam-to-world
+            # # flowmap_points = flowmap_output.surfaces #(batch frame height width xyz=3)
+            # # flowmap_intrinsics = flowmap_output.intrinsics #(batch frame 3 3)
+            # # flowmap_extrinsics = flowmap_output.extrinsics #(batch frame 4 4)
+            # # flowmap_depths = flowmap_output.depths #(batch frame height width) = depths
 
-    for modality, logs_modality in out.items():
-        for k, data in logs_modality.items():
-            out[modality][k] = torch.cat(data, dim=0)
-            print(modality, k, out[modality][k].shape)
 
 
-    # Save point cloud
-    if True:
-    # if config.prepare_visualization:
+        print_tensor_dict(points_visualization)
 
-        # Log rgbs and depths for point cloud visualization.
-        output_pointcloud = {
-            'sampled': {'ctxt': dict(), 'trgt': dict()},
-            'gt': {'ctxt': dict(), 'trgt': dict()}
-        }
+        for keys in product(['sampled', 'gt'],['ctxt','trgt'],['world_crds','rgb_crds','poses']):
+            print(2.8, keys)
+            print(2.8, keys, get_value(points_visualization,keys).shape)
+
+        np.savez(os.path.join(viz_path_pc, f'{dataset_name}_{scene}_.npz'), **points_visualization)
+
+
+    # Visualizations
+    for modality in ['rgbs', 'depths', 'flows']:
+        keys_list, _ = get_keys(modality)
+        for keys in keys_list:
+            value = get_value(logs, keys)
+            if value is not None:
+                print(keys, value.size())
+                viz_images = prepare_visualization(value, keys)
+                video = (viz_images * 255).type(torch.uint8)
+                torchvision.io.write_video(os.path.join(viz_path_videos, f'{"_".join(keys)}.mp4'), video, fps=5)
         
-        for modality, logs_modality in outputs.items():
 
-            if modality != 'optical_flow':
-                for key, data in logs_modality.items():
-                    split = 'sampled' if key != 'inputs' else 'gt'
+
+
+    # print('Shapes default collage')
+    # for modality, logs_modality in outputs.items():
+    #     for k, data in logs_modality.items():
+    #         print(modality, k, data.shape)
+
+    # print('')
+    # print('Manual shapes')
+
+    # for modality, logs_modality in out.items():
+    #     for k, data in logs_modality.items():
+    #         out[modality][k] = torch.cat(data, dim=0)
+    #         print(modality, k, out[modality][k].shape)
+    # print('')
+
+
+    # # Save point cloud
+    # if True:
+    # # if config.prepare_visualization:
+
+    #     # Log rgbs and depths for point cloud visualization.
+    #     output_pointcloud = {
+    #         'sampled': {'ctxt': dict(), 'trgt': dict()},
+    #         'gt': {'ctxt': dict(), 'trgt': dict()}
+    #     }
+        
+    #     for modality, logs_modality in outputs.items():
+
+    #         if modality != 'optical_flow':
+    #             for key, data in logs_modality.items():
+    #                 if key != 'inputs' and modality != 'conditioning':
+    #                     split = 'sampled'
+    #                     other_split = 'gt'
+    #                 else:
+    #                     split = 'gt'
+    #                     other_split = 'sampled'
                     
-                    if 'trgt' in modality:
-                        frame = 'trgt'
-                    else:
-                        frame = 'ctxt'
+    #                 if 'trgt' in modality:
+    #                     frame = 'trgt'
+    #                 else:
+    #                     frame = 'ctxt'
 
-                    assert False, "Key rgb_crds not in dict for GT"
+    #                 # assert False, "Key rgb_crds not in dict for GT"
 
-                    # Formats depth.
-                    if 'depth' in modality:
-                        if key in ['inputs', 'samples']:
-                            depths = data.mean(1)
-                            HW = pixel_grid_coordinates(depths.size(1), depths.size(2))
-                            pixel_coordinates = rearrange(HW, 'h w c -> c (h w)')
-
-                            world_crds = list()
-                            poses = list()
-
-                            for k in range(data.size(0)):
-                                camera = cameras[k][0] if frame == 'ctxt' else cameras[k][1]
-                                depth = rearrange(depths[k], 'h w -> 1 (h w)')
-
-                                # Un-project to world coordinates
-                                world_pts = camera.pixel_to_world(pixel_coordinates, depths=depth)
-                                world_coordinates = to_euclidean_space(world_pts).numpy()
-
-                                world_crds.append(rearrange(world_coordinates, 'c n -> n c'))
-                                c2w = camera.c2w.numpy()
-                                poses.append(c2w)
-
-                            # Stacks points and poses
-                            world_crds = np.stack(world_crds, axis=0) # (frame, hw, xyz=3)
-                            poses = np.stack(poses, axis=0) # (frame, 4, 4)
-
-                            output_pointcloud[split][frame]['world_crds'] = world_crds
-                            output_pointcloud[split][frame]['poses'] = poses
-
-                    # Format rgbs.
-                    elif 'intermediates' not in key:
-                        rgbs = torch.clamp(data, -1., 1.)
-                        rgbs = (rgbs + 1.0) / 2.0
-                        rgbs = rearrange(rgbs, 'n c h w -> n (h w) c').numpy() # (frame, hw, rgb=3)
-                        output_pointcloud[split][frame]['rgb_crds'] = rgbs
-
-        np.savez(os.path.join(viz_path_pc, f'{dataset_name}_{scene}_.npz'), **output_pointcloud)
+    #                 # Formats depth.
+    #                 if 'depth' in modality:
+    #                     if key in ['inputs', 'samples']:
+    #                         depths = data.mean(1)
 
 
+    #                         # if key == 'samples':
+    #                         #     gt_depth_filtered, _ = filter_depth(outputs[modality]['inputs'])
+    #                         #     print(f'SCALE {key} DEPTH {frame}', depths.mean())
+    #                         #     print(f'SCALE gt DEPTH {frame}', gt_depth_filtered.mean())
+    #                         #     depths = depths * gt_depth_filtered.mean() / depths.mean()
+    #                         #     print(f'SCALE {key} RESCALED DEPTH {frame}', depths.mean())
 
 
+    #                         HW = pixel_grid_coordinates(depths.size(1), depths.size(2))
+    #                         pixel_coordinates = rearrange(HW, 'h w c -> c (h w)')
 
-    # Create videos from samples.
-    for modality, logs_modality in out.items():
-        for k, data in logs_modality.items():
+    #                         world_crds = list()
+    #                         poses = list()
 
-            if modality == 'depths':
-                if 'gt' in k:
-                    out[modality][k] = out[modality][k].mean(1, keepdims=True)
-                out[modality][k] = color_map_depth(out[modality][k].squeeze(1))
+    #                         for k in range(data.size(0)):
+    #                             camera = cameras[k][0] if frame == 'ctxt' else cameras[k][1]
+                                # depth = rearrange(depths[k], 'h w -> 1 (h w)')
 
-            elif modality == 'rgbs':
-                out[modality][k] = torch.clamp(out[modality][k], -1., 1.)
-                out[modality][k] = (out[modality][k] + 1.0) / 2.0
+                                # # Un-project to world coordinates
+                                # world_pts = camera.pixel_to_world(pixel_coordinates, depths=depth)
+                                # world_coordinates = to_euclidean_space(world_pts).numpy()
 
-            elif modality == 'flows':
-                out[modality][k] = (flow_to_color(out[modality][k][:,:2,:,:]) / 255)
+                                # world_crds.append(rearrange(world_coordinates, 'c n -> n c'))
+                                # c2w = camera.c2w.numpy()
+                                # poses.append(c2w)
 
-            # Save videos.
-            frames = rearrange(out[modality][k], 'b c h w -> b h w c')
-            frames = (frames * 255).type(torch.uint8)
-            torchvision.io.write_video(viz_path_videos / f'{scene}_{k}.mp4', frames, fps=5)
+    #                         # Stacks points and poses
+    #                         world_crds = np.stack(world_crds, axis=0) # (frame, hw, xyz=3)
+    #                         poses = np.stack(poses, axis=0) # (frame, 4, 4)
 
-    # Save point cloud
-    if False:
-    # if config.prepare_visualization:
-        viz_file = {'gt': dict(), 'sampled': dict()}
-        # for k in out['depths']:
-        #     if 'gt' in k:
+    #                         output_pointcloud[split][frame]['world_crds'] = world_crds
+    #                         output_pointcloud[split][frame]['poses'] = poses
 
+    #                 # Format rgbs.
+    #                 elif 'intermediates' not in key:
+    #                     rgbs = torch.clamp(data, -1., 1.)
+    #                     rgbs = (rgbs + 1.0) / 2.0
+    #                     rgbs = rearrange(rgbs, 'n c h w -> n (h w) c').numpy() # (frame, hw, rgb=3)
+    #                     output_pointcloud[split][frame]['rgb_crds'] = rgbs
 
+    #                     # Copy in case no color is rendered
+    #                     if not 'rgbs_crds' in output_pointcloud[other_split][frame]:
+    #                         output_pointcloud[other_split][frame]['rgb_crds'] = rgbs
 
+    #     print('Shapes pointcloud viz')
+    #     for split, pc_viz_dict in output_pointcloud.items():
+    #         for modality, logs_modality in pc_viz_dict.items():
+    #             for k, data in logs_modality.items():
+    #                 if isinstance(data, np.ndarray):
+    #                     print(split, modality, k, data.shape)
 
-        np.savez(f"samples_{dataset_name}_{scene}", **out)
+    #     np.savez(os.path.join(viz_path_pc, f'{dataset_name}_{scene}_.npz'), **output_pointcloud)
+
+    # # Create videos from samples.
+    # for modality, logs_modality in out.items():
+    #     for k, data in logs_modality.items():
+
+    #         if modality == 'depths':
+    #             if 'gt' in k:
+    #                 out[modality][k] = out[modality][k].mean(1, keepdims=True)
+    #             out[modality][k], _ = filter_depth(out[modality][k])
+    #             out[modality][k] = color_map_depth(out[modality][k].squeeze(1))
+
+    #         elif modality == 'rgbs':
+    #             out[modality][k] = torch.clamp(out[modality][k], -1., 1.)
+    #             out[modality][k] = (out[modality][k] + 1.0) / 2.0
+
+    #         elif modality == 'flows':
+    #             if 'mask' in k:
+    #                 out[modality][k] = repeat(out[modality][k], 'b h w -> b c h w', c=3)
+    #             else:
+    #                 out[modality][k] = (flow_to_color(out[modality][k][:,:2,:,:]) / 255)
+
+    #         # Save videos.
+    #         frames = rearrange(out[modality][k], 'b c h w -> b h w c')
+    #         frames = (frames * 255).type(torch.uint8)
+    #         torchvision.io.write_video(viz_path_videos / f'{scene}_{k}.mp4', frames, fps=5)
+        
+    #     # for k in ['gt', 'sampled']:
+    #     #     video_path = viz_path_videos / f'{scene}_{k}.mp4'
+    #     #     os.system(
+    #     #             f"ffmpeg -f concat -r 5 -safe 0 -i {video_path}  \
+    #     #             -vf 'drawtext=text={k}:fontcolor=white:fontsize=11:box=1:boxcolor=black@0.5:boxborderw=5:x=0:y=0' \
+    #     #             -y {video_path}"
+    #     #         )
+
+  
+    #     # # Concatenates videos.
+    #     # os.system(
+    #     #     f'ffmpeg -i "visualizations/medias/{modalities[0]}.mp4" -i "visualizations/medias/{modalities[1]}.mp4" -i "visualizations/medias/{modalities[2]}.mp4" \
+    #     #     -filter_complex vstack=inputs=3 -y "visualizations/medias/rgb_depth_flow_{frame}_{split}.mp4"'
+    #     # )
 
     
 
-    ########### jg: Instantiate loggers from main trunk ################
-
-        # # trainer and callbacks
-        # trainer_kwargs = dict()
-
-        # # default logger configs
-        # default_logger_cfgs = {
-        #     "wandb": {
-        #         "target": "pytorch_lightning.loggers.WandbLogger",
-        #         "params": {
-        #             "name": nowname,
-        #             "save_dir": logdir,
-        #             "offline": config.experiment_cfg.debug,
-        #             "id": nowname,
-        #         }
-        #     },
-        #     "testtube": {
-        #         "target": "pytorch_lightning.loggers.TestTubeLogger",
-        #         "params": {
-        #             "name": "testtube",
-        #             "save_dir": logdir,
-        #         }
-        #     },
-        # }
-        # default_logger_cfg = default_logger_cfgs["testtube"]
-        # if "logger" in config.lightning:
-        #     logger_cfg = config.lightning.logger
-        # else:
-        #     logger_cfg = OmegaConf.create()
-        # logger_cfg = OmegaConf.merge(default_logger_cfg, logger_cfg)
-        # trainer_kwargs["logger"] = instantiate_from_config(logger_cfg)
-
-        # # add callback which sets up log directory
-        # default_callbacks_cfg = {
-        #     "setup_callback": {
-        #         "target": "main.SetupCallback",
-        #         "params": {
-        #             "resume": config.experiment_cfg.resume,
-        #             "now": now,
-        #             "logdir": logdir,
-        #             "ckptdir": ckptdir,
-        #             "cfgdir": cfgdir,
-        #             "config": config,
-        #             "lightning_config": config.lightning,
-        #             "debug": config.experiment_cfg.debug,
-        #         }
-        #     },
-        #     "image_logger": {
-        #         "target": "ldm.visualization.image_loggers.ImageLogger",
-        #         "params": {
-        #             "batch_frequency": 750,
-        #             "max_images": 4,
-        #             "clamp": True
-        #         }
-        #     },
-        #     "cuda_callback": {
-        #         "target": "main.CUDACallback"
-        #     },
-        # }
-
-        # if "callbacks" in config.lightning:
-        #     callbacks_cfg = config.lightning.callbacks
-        # else:
-        #     callbacks_cfg = OmegaConf.create()
-
-        # callbacks_cfg = OmegaConf.merge(default_callbacks_cfg, callbacks_cfg)
-        # if 'ignore_keys_callback' in callbacks_cfg and hasattr(trainer_opt, 'resume_from_checkpoint'):
-        #     callbacks_cfg.ignore_keys_callback.params['ckpt_path'] = trainer_opt.resume_from_checkpoint
-        # elif 'ignore_keys_callback' in callbacks_cfg:
-        #     del callbacks_cfg['ignore_keys_callback']
-
-        # trainer_kwargs["callbacks"] = [instantiate_from_config(callbacks_cfg[k]) for k in callbacks_cfg]
-        # if not "plugins" in trainer_kwargs:
-        #     trainer_kwargs["plugins"] = list()
-     
-   
-
 if __name__ == "__main__":
     sample()
-
-
-
-
-
-########### jg: Old sampling code ################
-
-
-
-#     now = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
-
-#     # add cwd for convenience and to make classes in this file available when
-#     # running as `python main.py`
-#     # (in particular `ldm.data.datamodule.DataModuleFromConfig`)
-#     sys.path.append(os.getcwd())
-
-#     parser = get_parser()
-#     parser = Trainer.add_argparse_args(parser)
-
-#     opt, unknown = parser.parse_known_args()
-#     if opt.name and opt.resume:
-#         raise ValueError(
-#             "-n/--name and -r/--resume cannot be specified both."
-#             "If you want to resume training in a new log folder, "
-#             "use -n/--name in combination with --resume_from_checkpoint"
-#         )
-#     if opt.resume:
-#         if not os.path.exists(opt.resume):
-#             raise ValueError("Cannot find {}".format(opt.resume))
-#         if os.path.isfile(opt.resume):
-#             paths = opt.resume.split("/")
-#             # idx = len(paths)-paths[::-1].index("logs")+1
-#             # logdir = "/".join(paths[:idx])
-#             logdir = "/".join(paths[:-2])
-#             ckpt = opt.resume
-#         else:
-#             assert os.path.isdir(opt.resume), opt.resume
-#             logdir = opt.resume.rstrip("/")
-#             ckpt = os.path.join(logdir, "checkpoints", "last.ckpt")
-
-#         opt.resume_from_checkpoint = ckpt
-#         base_configs = sorted(glob.glob(os.path.join(logdir, "configs/*.yaml")))
-#         opt.base = base_configs + opt.base
-#         _tmp = logdir.split("/")
-#         nowname = _tmp[-1]
-#     else:
-#         if opt.name:
-#             name = "_" + opt.name
-#         elif opt.base:
-#             cfg_fname = os.path.split(opt.base[0])[-1]
-#             cfg_name = os.path.splitext(cfg_fname)[0]
-#             name = "_" + cfg_name
-#         else:
-#             name = ""
-#         nowname = now + name + opt.postfix
-#         logdir = os.path.join(opt.logdir, nowname)
-
-#     ckptdir = os.path.join(logdir, "checkpoints")
-#     cfgdir = os.path.join(logdir, "configs")
-#     seed_everything(opt.seed)
-
-
-#     # init and save configs
-#     configs = [OmegaConf.load(cfg) for cfg in opt.base]
-#     cli = OmegaConf.from_dotlist(unknown)
-#     config = OmegaConf.merge(*configs, cli)
-#     lightning_config = config.pop("lightning", OmegaConf.create())
-#     # merge trainer cli with config
-#     trainer_config = lightning_config.get("trainer", OmegaConf.create())
-#     # default to ddp
-#     trainer_config["accelerator"] = "ddp"
-#     for k in nondefault_trainer_args(opt):
-#         trainer_config[k] = getattr(opt, k)
-#     if not "gpus" in trainer_config:
-#         del trainer_config["accelerator"]
-#         cpu = True
-#     else:
-#         gpuinfo = trainer_config["gpus"]
-#         rank_zero_print(f"Running on GPUs {gpuinfo}")
-#         device = torch.device(f'cuda:{gpuinfo}')
-#         cpu = False
-#     trainer_opt = argparse.Namespace(**trainer_config)
-#     lightning_config.trainer = trainer_config
-
-#     # model
-#     model = instantiate_from_config(config.model)
-#     model.cpu()
-
-#     if not opt.finetune_from == "":
-#         rank_zero_print(f"Attempting to load state from {opt.finetune_from}")
-#         old_state = torch.load(opt.finetune_from, map_location="cpu")
-#         if "state_dict" in old_state:
-#             rank_zero_print(f"Found nested key 'state_dict' in checkpoint, loading this instead")
-#             old_state = old_state["state_dict"]
-
-#         #Check if we need to port input weights from 4ch input to n*4ch
-#         in_filters_load = old_state["model.diffusion_model.input_blocks.0.0.weight"]
-#         new_state = model.state_dict()
-#         in_filters_current = new_state["model.diffusion_model.input_blocks.0.0.weight"]
-#         in_shape = in_filters_current.shape
-#         #initializes new input weights if input dims don't match
-#         if in_shape != in_filters_load.shape:
-#             rank_zero_print("Modifying weights to multiply their number of input channels")
-#             keys_to_change_inputs = [
-#                 "model.diffusion_model.input_blocks.0.0.weight",
-#                 "model_ema.diffusion_modelinput_blocks00weight",
-#             ]
-            
-#             for k in keys_to_change_inputs:
-#                 input_weight_new = new_state[k] # size (C_out, C_in, kernel_size, kernel_size)
-#                 C_in_new = input_weight_new.size(1)
-#                 C_in_old = old_state[k].size(1)
-
-#                 assert  C_in_new % C_in_old == 0 and  C_in_new >= C_in_old, f"Number of input channels for checkpoint and new U-Net should be multiple, got {C_in_new} and {C_in_old}"
-#                 print("modifying input weights for compatibitlity")
-#                 copy_weights = True
-#                 scale = 1/(C_in_new//C_in_old) if copy_weights else 1e-8 #scales input to prevent activations to blow up when copying
-#                 #repeats checkpoint weights C_in_new//C_in_old times along input channels=dim1
-#                 old_state[k] = modify_conv_weights(old_state[k], scale=scale, n=C_in_new//C_in_old, dim=1, copy_weights=copy_weights)
-                
-#         #check if we need to port output weights from 4ch to n*4 ch
-#         out_filters_load = old_state["model.diffusion_model.out.2.weight"]
-#         out_filters_current = new_state["model.diffusion_model.out.2.weight"]
-#         out_shape = out_filters_current.shape
-#         if out_shape != out_filters_load.shape:
-#             rank_zero_print("Modifying weights and biases to multiply their number of output channels")
-#             keys_to_change_outputs = [
-#                 "model.diffusion_model.out.2.weight",
-#                 "model.diffusion_model.out.2.bias",
-#                 "model_ema.diffusion_modelout2weight",
-#                 "model_ema.diffusion_modelout2bias",
-#             ]
-#             #initializes randomly new output weights if input dims don't match
-#             for k in keys_to_change_outputs:
-#                 print("modifying output weights for compatibitlity")
-#                 output_weight_new = new_state[k] # size (C_out, C_in, kernel_size, kernel_size)
-#                 C_out_new = output_weight_new.size(0)
-#                 C_out_old = old_state[k].size(0)
-
-#                 assert C_out_new % C_out_old == 0 and  C_out_new >= C_out_old, f"Number of input channels for checkpoint and new U-Net should be multiple, got {C_out_new} and {C_out_old}"
-#                 print("modifying input weights for compatibitlity")
-#                 #repeats checkpoint weights C_in_new//C_in_old times along output weights channels=dim0
-#                 copy_weights = True
-#                 scale = 1 if copy_weights else 1e-8 #copies exactly weights if copy initialization
-#                 old_state[k] = modify_conv_weights(old_state[k], scale=scale, n=C_out_new//C_out_old, dim=0, copy_weights=copy_weights)
-
-#         #if we load SD weights and still want to override with existing checkpoints
-#         if config.model.params.ckpt_path is not None:
-#             rank_zero_print(f"Attempting to load state from {config.model.params.ckpt_path}")
-#             old_state = torch.load(config.model.params.ckpt_path, map_location="cpu")
-#             if "state_dict" in old_state:
-#                 rank_zero_print(f"Found nested key 'state_dict' in checkpoint, loading this instead")
-#                 old_state = old_state["state_dict"]
-#             #loads checkpoint weights
-#             m, u = model.load_state_dict(old_state, strict=False)
-#             if len(m) > 0:
-#                 rank_zero_print("missing keys:")
-#                 rank_zero_print(m)
-#             if len(u) > 0:
-#                 rank_zero_print("unexpected keys:")
-#                 rank_zero_print(u)
-
-#         #loads checkpoint weights
-#         m, u = model.load_state_dict(old_state, strict=False)
-#         if len(m) > 0:
-#             rank_zero_print("missing keys:")
-#             rank_zero_print(m)
-#         if len(u) > 0:
-#             rank_zero_print("unexpected keys:")
-#             rank_zero_print(u)
-
-#         #if we load SD weights and still want to override with existing checkpoints
-#         if config.model.params.ckpt_path is not None:
-#             rank_zero_print(f"Attempting to load state from {config.model.params.ckpt_path}")
-#             old_state = torch.load(config.model.params.ckpt_path, map_location="cpu")
-#             if "state_dict" in old_state:
-#                 rank_zero_print(f"Found nested key 'state_dict' in checkpoint, loading this instead")
-#                 old_state = old_state["state_dict"]
-#             #loads checkpoint weights
-#             m, u = model.load_state_dict(old_state, strict=False)
-#             if len(m) > 0:
-#                 rank_zero_print("missing keys:")
-#                 rank_zero_print(m)
-#             if len(u) > 0:
-#                 rank_zero_print("unexpected keys:")
-#                 rank_zero_print(u)
-
-#     model.eval()
-#     model.to(device)
-
-#     #creates datamodule, dataloader, dataset
-#     data = instantiate_from_config(config.data) # cree le datamodule
-#     data.prepare_data()
-#     data.setup() #cree les datasets
-#     dataloader_train = data.train_dataloader()
-#     dataset_train = data.datasets['train']
-
-#     bs = 4
-#     N = 4
-#     ddim_steps = 200
-#     ddim_eta = 1.
-
-
-#     flow_fwd_sampled_path = f"flow_forward_sampled"
-#     flow_fwd_gt_path = f"flow_forward_gt"
-#     os.makedirs(flow_fwd_sampled_path, exist_ok=True)
-#     os.makedirs(flow_fwd_gt_path, exist_ok=True)
-
-#     flows_fwd, flows_fwd_gt = list(), list()
-
-#     assert model.modalities_in == ['optical_flow'], "Sampling not implemented for other modalities than optical flow"
-
-#     for i, batch in tqdm(enumerate(dataloader_train)):
-#         print('INDICES BATCH LOOP : ', batch['indices'])
-#         x, c, xc = model.get_input(batch, model.first_stage_key,
-#                                            force_c_encode=True,
-#                                            return_original_cond=True,
-#                                            bs=bs)
-        
-#         # Compute optical flow.
-#         samples, x_denoise_row = model.sample_log(cond=c,batch_size=N,ddim=True,
-#                                                             ddim_steps=ddim_steps,eta=ddim_eta) #samples generative process in latent space
-        
-#         # Prepare flow for logging.
-#         samples_flow_fwd = samples.x_noisy.cpu()[1,:2,:,:].unsqueeze(0) # (N, C, H, W)
-#         flow_fwd_gt = x.cpu()[1,:2,:,:].unsqueeze(0)  # (N, H, W, C)
-
-#         # Saves flows, frames and masks.
-#         flows_fwd.append(samples_flow_fwd)
-#         flows_fwd_gt.append(flow_fwd_gt)
-        
-#         # Save RGB flow viz and frames.
-#         flow_sampled_rgb = (flow_to_color(samples_flow_fwd) / 255)  #should be (B, 2, H, W)
-#         flow_fwd_gt_rgb = (flow_to_color(flow_fwd_gt) / 255)
-
-#         save_image(flow_sampled_rgb, os.path.join(flow_fwd_sampled_path, f'flow_sampled_%06d_%06d.png'%(i+1,i)))
-#         save_image(flow_fwd_gt_rgb, os.path.join(flow_fwd_gt_path, f'flow_gt_%06d_%06d.png'%(i,i+1)  ))
-#         torch.save(samples_flow_fwd,  os.path.join(flow_fwd_sampled_path, f'flow_sampled_%06d_%06d.pt'%(i+1,i)  ))
-#         torch.save(flow_fwd_gt, os.path.join(flow_fwd_gt_path, f'flow_gt_%06d_%06d.pt'%(i,i+1) ))
-
-
-
