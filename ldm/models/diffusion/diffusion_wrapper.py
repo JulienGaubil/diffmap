@@ -4,10 +4,11 @@ import pytorch_lightning as pl
 from einops import rearrange
 from jaxtyping import Float, Int
 from torch import Tensor
+from omegaconf import OmegaConf
 from dataclasses import dataclass
 
 import torch.nn.functional as F
-from ldm.util import instantiate_from_config
+from ldm.misc.util import instantiate_from_config
 from ldm.modules.flowmap.model.backbone.backbone_midas import make_net
 
 
@@ -20,18 +21,27 @@ class DiffusionOutput:
 
 #Class wrapper du U-Net, appelle son forward pass dans forward
 class DiffusionMapWrapper(pl.LightningModule):
-    def __init__(self, diff_model_config, conditioning_key, image_size, compute_weights=False, latent=False):
+    def __init__(
+            self,
+            diff_model_config: OmegaConf,
+            conditioning_key: str,
+            image_size: int,
+            compute_weights: bool = False,
+            latent: bool = False
+    ) -> None:
         super().__init__()
 
-        self.diffusion_model = instantiate_from_config(diff_model_config) # U-Net
-        self.diff_out = self.diffusion_model.out
-        self.diffusion_model.out = nn.Identity()
-
         self.conditioning_key = conditioning_key
-        assert self.conditioning_key in [None, 'concat', 'crossattn', 'hybrid', 'adm', 'hybrid-adm']
-
         self.compute_weights = compute_weights
         self.latent = latent
+        assert self.conditioning_key in [None, 'concat', 'crossattn', 'hybrid', 'adm', 'hybrid-adm']
+
+        # Instantiate diffusion model.
+        self.diffusion_model = instantiate_from_config(diff_model_config)
+
+        # Instantiate output heads.
+        self.diff_out = self.diffusion_model.out
+        self.diffusion_model.out = nn.Identity()
         if self.compute_weights:
             model_channels = self.diffusion_model.model_channels
             if self.latent:

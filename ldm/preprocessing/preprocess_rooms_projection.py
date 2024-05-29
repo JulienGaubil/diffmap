@@ -235,7 +235,6 @@ def preprocess_rooms_projection(cfg: DictConfig) -> None:
     print(scenes)
     print('')
     print(stride)
-    assert False
 
     for scene in scenes:
         print(scene)

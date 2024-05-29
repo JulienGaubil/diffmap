@@ -14,8 +14,6 @@ from flow_vis_torch import flow_to_color
 from einops import rearrange
 
 from ldm.misc.util import instantiate_from_config, rank_zero_print
-from ldm.modules.flowmap.visualization.depth import color_map_depth
-from ldm.modules.flowmap.visualization.color import apply_color_map_to_image
 from ldm.visualization import color_map_depth, apply_color_map_to_image, filter_depth, warp_image_flow, overlay_images
 
 

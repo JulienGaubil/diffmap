@@ -16,7 +16,7 @@ from ..misc.cropping import (
 )
 from ..misc.image_io import prep_image
 from ..visualization import Visualizer
-from .model import Model, FlowmapModelDiff
+from .model import Model, FlowmapModelDiff, ModelOutput
 
 from jaxtyping import Float
 from torch import Tensor
@@ -148,18 +148,9 @@ class FlowmapLossWrapper(nn.Module):
         batch = Batch(**batch_dict)
         batch, _ = crop_and_resize_batch_for_model(batch, self.cfg_cropping)
         b, f, _, h, w = batch.videos.shape
-        assert f==2, "Flowmap loss only for pairs of images"
         
-        # Create flow structures
-        # flows = Flows(**flows)
-        # flows.forward = self.flow_predictor.rescale_flow(flows.forward, (h,w)) #(batch, pair=1, height_scaled, width_scaled, 2)
-        # flows.backward = self.flow_predictor.rescale_flow(flows.backward, (h,w)) #(batch, pair=1, height_scaled, width_scaled, 2)
-        # flows.forward_mask = self.flow_predictor.rescale_mask(flows.forward_mask, (h,w)) #(batch, pair=1, height_scaled, width_scaled)
-        # flows.backward_mask = self.flow_predictor.rescale_mask(flows.backward_mask, (h,w)) #(batch, pair=1, height_scaled, width_scaled)
-
         # Rescale depth
         depths = rearrange(depths[...,None], "b f h w xy -> (b f) xy h w")
-        # depths = F.interpolate(depths, (h,w), mode="nearest")
         depths = rearrange(depths, "(b f) xy h w -> b f h w xy", b=b, f=f).squeeze(-1)
 
         return batch, flows, depths
@@ -171,11 +162,12 @@ class FlowmapLossWrapper(nn.Module):
             depths: Float[Tensor, "batch frame height width"],
             correspondence_weights: Float[Tensor, "batch frame-1 height width"],
             global_step: int,
-        ) -> Loss:
-        batch, flows, depths = self.preprocess_inputs(batch, flows, depths) #TODO adapt preprocessing for depth and flow
+            return_outputs = False
+    ) -> Loss | tuple[Loss, ModelOutput]:
+        batch, flows, depths = self.preprocess_inputs(batch, flows, depths)
 
         # Compute depths, poses, and intrinsics using the model.
-        model_output = self.model(batch, flows, depths, correspondence_weights, global_step) #TODO adapter forward flowmap pass to take depth as input
+        model_output = self.model(batch, flows, depths, correspondence_weights, global_step)
 
         # Compute and log the loss.
         total_loss = 0
@@ -193,4 +185,7 @@ class FlowmapLossWrapper(nn.Module):
             # self.log("train/intrinsics/fx_error", (fx_gt - fx_hat).abs())
             # self.log("train/intrinsics/fy_error", (fy_gt - fy_hat).abs())
 
-        return total_loss
+        if return_outputs:
+            return total_loss, model_output
+        else:
+            return total_loss

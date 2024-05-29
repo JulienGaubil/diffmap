@@ -473,7 +473,7 @@ def sample(config: DictConfig) -> None:
     # dataset_train = data.datasets['train']
 
     # Visualization paths.
-    viz_path_videos = Path(os.path.join('visualizations/medias/sampling', dataset_name, scene))
+    viz_path_videos = Path(os.path.join('visualizations/medias/sampling', dataset_name, scene, 'modalities'))
     viz_path_pc= Path(os.path.join('visualizations/pointclouds', dataset_name, scene))
     os.makedirs(viz_path_videos, exist_ok=True)
     os.makedirs(viz_path_pc, exist_ok=True)
@@ -481,127 +481,43 @@ def sample(config: DictConfig) -> None:
     depths_flowmap = dict()
     points_visualization = dict()
     logs = dict()
+
+    # Sampling loop.
     for i, batch in tqdm(enumerate(dataloader_val)):
 
-        if i < 2:
-            print(f'Frame indices val batch {i} : ', batch['indices'])
+        print(f'Frame indices val batch {i} : ', batch['indices'])
 
-            # Sample model.
-            log_image_kwargs = config.lightning.callbacks.image_logger.params.log_images_kwargs
-            batch_logs = model.log_images(
-                batch,
-                **log_image_kwargs
-            )
-            print(1, batch_logs.keys())
-            print(1.1, batch_logs['depth_trgt']['inputs'].shape)
-            print(1.2, batch_logs['depth_ctxt']['inputs'].shape)
+        # Sample model.
+        log_image_kwargs = config.lightning.callbacks.image_logger.params.log_images_kwargs
+        batch_logs = model.log_images(
+            batch,
+            **log_image_kwargs
+        )
 
-            ############### Flowmap related ################
+        # Get flowmap inputs.
+        if 'depth_ctxt' in batch_logs and 'depth_trgt' in batch_logs:
+            x, c, flows_input, _  = model.get_input(batch, model.first_stage_key, return_flows_depths=True)
 
-            # Get flowmap inputs.
-            if 'depth_ctxt' in batch_logs and 'depth_trgt' in batch_logs:
-                x, c, flows_input, _  = model.get_input(batch, model.first_stage_key, return_flows_depths=True)
+            bs, H, W = batch_logs['depth_ctxt']['samples'].squeeze(1).size()
 
-                bs, H, W = batch_logs['depth_ctxt']['samples'].squeeze(1).size()
+            # Add gt and sampled depth.
+            default_log(logs_dict=logs, modality='depths', batch_logs=batch_logs)
+            
+            # Add gt flow.
+            default_add(logs, ['gt','flows','backward'], flows_input.backward.squeeze(1).cpu() * 0.0213) # (frame h w xy=2)
+            default_add(logs, ['gt','flows','forward_mask'], flows_input.forward_mask.squeeze(1).cpu()) # (frame h w)
+            default_add(logs, ['gt','flows','backward_mask'], flows_input.backward_mask.squeeze(1).cpu())
 
-                print(0.01, batch_logs['depth_ctxt']['inputs'].shape)
+            # Add gt camera intrinsics.
+            default_add(logs,['gt','ctxt','cameras'], batch['camera_ctxt'], operation="extend")
+            default_add(logs,['gt','trgt','cameras'], batch['camera_trgt'], operation="extend")
 
-                # Add gt and sampled depth.
-                default_log(logs_dict=logs, modality='depths', batch_logs=batch_logs)
-
-                # default_add(logs, ['sampled','ctxt','depths'], batch_logs['depth_ctxt']['samples'].squeeze(1))
-                # default_add(logs, ['sampled','trgt','depths'], batch_logs['depth_trgt']['samples'].squeeze(1))
-
-                # Get flows for context and target streams.
-                print(2.21, flows_input.forward.shape, flows_input.backward.shape, flows_input.forward_mask.shape, flows_input.backward_mask.shape)
-                id_start_ctxt, id_end_ctxt = 0, bs
-                id_start_trgt, id_end_trgt = 0, bs
-                if i == 0:
-                    # Skip flow for first pair for trgt stream.
-                    id_start_trgt = 1
-                elif i == len(dataloader_val) - 1:
-                    # Skip flow for last pair for ctxt stream.
-                    id_end_ctxt = bs - 1
-
-                # Add correspondence weights.
-                default_add(logs, ['sampled','ctxt','correspondence_weights'], torch.ones(id_end_ctxt - id_start_ctxt, H, W))
-                default_add(logs, ['sampled','trgt','correspondence_weights'], torch.ones(id_end_trgt - id_start_trgt, H, W))
-                default_add(logs, ['gt','ctxt','correspondence_weights'], torch.ones(id_end_ctxt - id_start_ctxt, H, W))
-                default_add(logs, ['gt','trgt','correspondence_weights'], torch.ones(id_end_trgt - id_start_trgt, H, W))
-                
-                # Add gt flow.
-                default_add(logs, ['gt','flows','backward'], flows_input.backward.squeeze(1).cpu() * 0.0213) # (frame h w xy=2)
-                default_add(logs, ['gt','flows','forward_mask'], flows_input.forward_mask.squeeze(1).cpu()) # (frame h w)
-                default_add(logs, ['gt','flows','backward_mask'], flows_input.backward_mask.squeeze(1).cpu())
-
-
-                # default_add(logs, ['gt','flows','forward'], flows_input.forward[id_start_ctxt:id_end_ctxt,0,:,:,:].cpu() * 0.0213)
-                # default_add(logs, ['gt','flows','forward',], flows_input.forward[id_start_trgt:id_end_trgt, 0,:,:,:].cpu() * 0.0213)
-                # default_add(logs, ['gt','flows','backward'], flows_input.backward[id_start_ctxt:id_end_ctxt,0,:,:,:].cpu() * 0.0213)
-                # default_add(logs, ['gt','flows','backward'], flows_input.backward[id_start_trgt:id_end_trgt, 0,:,:,:].cpu() * 0.0213)
-                # default_add(logs, ['gt','flows','forward_mask'], flows_input.forward_mask[id_start_ctxt:id_end_ctxt,0,:,:].cpu())
-                # default_add(logs, ['gt','flows','forward_mask'], flows_input.forward_mask[id_start_trgt:id_end_trgt, 0,:,:].cpu())
-                # default_add(logs, ['gt','flows','backward_mask'], flows_input.backward_mask[id_start_ctxt:id_end_ctxt,0,:,:].cpu())
-                # default_add(logs, ['gt','flows','backward_mask'], flows_input.backward_mask[id_start_trgt:id_end_trgt, 0,:,:].cpu())
-
-                # Add gt camera intrinsics.
-                default_add(logs,['gt','ctxt','cameras'], batch['camera_ctxt'], operation="extend")
-                default_add(logs,['gt','trgt','cameras'], batch['camera_trgt'], operation="extend")
-
-                print(2.31, len(get_value(logs, ['gt','ctxt','cameras'])))
-                # print(2.311, get_value(logs, ['gt','ctxt','cameras']))
-                print(2.32, len(get_value(logs, ['gt','trgt','cameras'])))
-                # print(2.321, get_value(logs, ['gt','trgt','cameras']))
-
-            ############## Logging code #################
-
-            # Add gt and sampled flows and rgbs.
-            default_log(logs_dict=logs, modality='rgbs', batch_logs=batch_logs)
-            default_log(logs_dict=logs, modality='flows', batch_logs=batch_logs)
+        # Add gt and sampled flows and rgbs.
+        default_log(logs_dict=logs, modality='rgbs', batch_logs=batch_logs)
+        default_log(logs_dict=logs, modality='flows', batch_logs=batch_logs)
             
 
-            # # Logging for pointcloud. - TODO do again with default_add.
-            # if i > 0:
-            #     for modality, logs_modality in log.items():
-            #         for key, data in logs_modality.items():
-            #             outputs[modality][key] = torch.cat([outputs[modality][key].cpu(), data.cpu()], dim=0)
-            # else:
-            #     outputs = log
-                
-            # Loading for video visualization.
-
-            # # Log flows.
-            # if 'optical_flow' in log:
-                # default_add(out, ['flows', 'fwd_flow_gt'], log['optical_flow']['inputs'].cpu())
-                # default_add(out, ['flows', 'fwd_flow_sampled'], log['optical_flow']['samples'].cpu())
-                # default_add(out, ['flows', 'bwd_flows_gt'], rearrange(batch['optical_flow_bwd'], 'n h w c -> n c h w').cpu())
-                # print(type(batch['optical_flow_mask']), type(batch['optical_flow_bwd_mask']))
-                # assert False
-                # default_add(out, ['flows', 'fwd_flows_mask_gt'], batch['optical_flow_mask'].cpu())
-                # default_add(out, ['flows', 'bwd_flows_mask_gt'], batch['optical_flow_bwd_mask'].cpu())
-            
-            
-            # #Log rgbs.
-            # if 'conditioning' in log:
-            #     default_add(out, ['rgbs', 'ctxt_rgb_gt'], log['conditioning']['concat'].cpu())
-            # if 'trgt' in log:
-            #     default_add(out, ['rgbs', 'trgt_rgb_gt'], log['trgt']['inputs'].cpu())
-            #     default_add(out, ['rgbs', 'trgt_rgb_sampled'], log['trgt']['samples'].cpu())
-
-                
-            # # Log depths.
-            # if 'depth_ctxt' in log:
-            #     default_add(out, ['depths', 'ctxt_depth_sampled'], log['depth_ctxt']['samples'].cpu())
-            #     default_add(out, ['depths', 'ctxt_depth_gt'], log['depth_ctxt']['inputs'].cpu())
-            # if 'depth_trgt' in log:
-            #     default_add(out, ['depths', 'trgt_depth_sampled'], log['depth_ctxt']['samples'].cpu())
-            #     default_add(out, ['depths', 'trgt_depth_gt'], log['depth_ctxt']['inputs'].cpu())
-
-            # cameras += [(batch['camera_ctxt'][k], batch['camera_trgt'][k]) for k in range(len(batch['camera_trgt']))]
-
-
-
-    print_tensor_dict(logs)
+    # print_tensor_dict(logs)
 
     # Concatenates all tensors.
     for modality in ['rgbs', 'depths', 'flows']:
@@ -614,10 +530,10 @@ def sample(config: DictConfig) -> None:
                 default_set(dictionnary=logs, keys=keys, value=value)
                 print(keys, get_value(logs, keys).shape)
                 print('')
-    for keys in product(['gt','sampled'], ['ctxt','trgt'],['correspondence_weights']):
-        default_set(dictionnary=logs, keys=keys, value=torch.cat(get_value(logs, keys), dim=0))
 
-    if 'depth_ctxt' in batch_logs and 'depth_trgt' in batch_logs:
+    # Run flowmap for 3D projection.
+    if config.experiment_cfg.save_points:
+        assert 'depth_ctxt' in batch_logs and 'depth_trgt' in batch_logs
         
         for key in ['gt', 'sampled']:
             flows_flowmap = dict()
@@ -630,18 +546,12 @@ def sample(config: DictConfig) -> None:
             ).to(model.device) # (batch=2 frame height width) batch[0] = ctxt, batch[1] = trgt
             
             # ############# TODO remove depth filtering #################
-            if key == 'gt':
-                B, F, H, W = depths_flowmap.shape
-                # depths_flowmap = depths_flowmap / 512
             depths_flowmap, valid_depths = filter_depth(depths_flowmap)
-
 
             valid_depths = valid_depths.float().to(model.device)
             correspondence_weights_flowmap = valid_depths[:,:-1,:,:] * valid_depths[:,1:,:,:] # both depth points should be valid
-            # default_add(logs, [key,'ctxt','correspondence_weights'], correspondence_weights_flowmap[0])
-            # default_add(logs, [key,'trgt','correspondence_weights'], correspondence_weights_flowmap[1])
-
-
+            default_set(logs, [key,'ctxt','correspondence_weights'], correspondence_weights_flowmap[0].cpu())
+            default_set(logs, [key,'trgt','correspondence_weights'], correspondence_weights_flowmap[1].cpu())
 
             # Create depths and correspondence weights inputs.
             # correspondence_weights_flowmap = torch.stack([
@@ -663,11 +573,6 @@ def sample(config: DictConfig) -> None:
                     dim=0
                 ).to(model.device)
             flows_flowmap = Flows(**flows_flowmap)
-
-            print(2.4, depths_flowmap.shape)
-            print(2.45, correspondence_weights_flowmap.shape)
-            print(2.5, flows_flowmap.forward.shape, flows_flowmap.backward.shape, flows_flowmap.forward_mask.shape, flows_flowmap.backward_mask.shape)
-
 
             # Create a dummy video batch.
             B, F, H, W = depths_flowmap.shape
@@ -692,8 +597,6 @@ def sample(config: DictConfig) -> None:
                 ).to(model.device) # (batch=2 frame 3 3) batch[0] = ctxt, batch[1] = trgt
                 intrinsics_flowmap[:,:,:2,:3] = intrinsics_flowmap[:,:,:2,:3] / H
                 dummy_flowmap_batch['intrinsics'] = intrinsics_flowmap
-
-            print(2.7, dummy_flowmap_batch["videos"].shape, dummy_flowmap_batch["indices"].shape, dummy_flowmap_batch['intrinsics'].shape)
 
             # Compute Flowmap output for full sequence.
             _, flowmap_output = model.flowmap_loss_wrapper(
@@ -819,22 +722,8 @@ def sample(config: DictConfig) -> None:
                 world_coordinates_ctxt = to_euclidean_space(camera_ctxt.local_to_world(local_pts_ctxt))
                 world_coordinates_trgt = to_euclidean_space(camera_trgt.local_to_world(local_pts_trgt))
 
-                
-                # HW = pixel_grid_coordinates(H, W)
-                # pixel_coordinates = rearrange(HW, 'h w c -> c (h w)')
-                # depth_ctxt = rearrange(flowmap_output.depths[0,k].cpu(), 'h w -> 1 (h w)')
-                # depth_trgt = rearrange(flowmap_output.depths[1,k].cpu(), 'h w -> 1 (h w)')
-
-                # # Un-project to world coordinates.
-                # world_pts_ctxt = camera_ctxt.pixel_to_world(pixel_coordinates, depths=depth_ctxt)
-                # world_pts_trgt = camera_trgt.pixel_to_world(pixel_coordinates, depths=depth_trgt)
-                # world_coordinates_ctxt = to_euclidean_space(world_pts_ctxt)
-                # world_coordinates_trgt = to_euclidean_space(world_pts_trgt)
-
                 default_add(points_visualization, [key, 'ctxt', 'world_crds'], rearrange(world_coordinates_ctxt, 'c n -> n c'))
                 default_add(points_visualization, [key, 'trgt', 'world_crds'], rearrange(world_coordinates_trgt, 'c n -> n c'))
-
-
 
 
 
@@ -890,8 +779,6 @@ def sample(config: DictConfig) -> None:
             # )
 
 
-
-
             # # Store old way (surfaces).
             # default_set(points_visualization, [key, 'ctxt', 'world_crds'], rearrange(flowmap_output.surfaces[0], 'f h w xyz -> f (h w) xyz').cpu().numpy())
             # default_set(points_visualization, [key, 'trgt', 'world_crds'], rearrange(flowmap_output.surfaces[1], 'f h w xyz -> f (h w) xyz').cpu().numpy())
@@ -905,173 +792,36 @@ def sample(config: DictConfig) -> None:
             # # flowmap_depths = flowmap_output.depths #(batch frame height width) = depths
 
 
-
-        print_tensor_dict(points_visualization)
-
-        for keys in product(['sampled', 'gt'],['ctxt','trgt'],['world_crds','rgb_crds','poses']):
-            print(2.8, keys)
-            print(2.8, keys, get_value(points_visualization,keys).shape)
+        # print_tensor_dict(points_visualization)
 
         np.savez(os.path.join(viz_path_pc, f'{dataset_name}_{scene}_.npz'), **points_visualization)
 
+    # Save video visualizations.
+    if config.experiment_cfg.visualization:
 
-    # Visualizations
-    for modality in ['rgbs', 'depths', 'flows']:
-        keys_list, _ = get_keys(modality)
-        for keys in keys_list:
+        # Save RGB, depth, flow samples.
+        for modality in ['rgbs', 'depths', 'flows']:
+            keys_list, _ = get_keys(modality)
+            for keys in keys_list:
+                value = get_value(logs, keys)
+                if value is not None:
+                    viz_images = prepare_visualization(value, keys)
+                    video = (viz_images * 255).type(torch.uint8)
+                    torchvision.io.write_video(os.path.join(viz_path_videos, f'{"_".join(keys)}.mp4'), video, fps=5)
+        # Save correspondence masks samples.
+        for keys in product(['gt', 'sampled'], ['ctxt', 'trgt'], ['correspondence_weights']):
             value = get_value(logs, keys)
             if value is not None:
-                print(keys, value.size())
                 viz_images = prepare_visualization(value, keys)
                 video = (viz_images * 255).type(torch.uint8)
                 torchvision.io.write_video(os.path.join(viz_path_videos, f'{"_".join(keys)}.mp4'), video, fps=5)
-        
+        try:
+            from visualizations.code.create_figure_sampling import draw_text
+            os.system(f'python -m visualizations.code.create_figure_sampling {viz_path_videos.parent}')
 
+        except ModuleNotFoundError:
+            pass
 
-
-    # print('Shapes default collage')
-    # for modality, logs_modality in outputs.items():
-    #     for k, data in logs_modality.items():
-    #         print(modality, k, data.shape)
-
-    # print('')
-    # print('Manual shapes')
-
-    # for modality, logs_modality in out.items():
-    #     for k, data in logs_modality.items():
-    #         out[modality][k] = torch.cat(data, dim=0)
-    #         print(modality, k, out[modality][k].shape)
-    # print('')
-
-
-    # # Save point cloud
-    # if True:
-    # # if config.prepare_visualization:
-
-    #     # Log rgbs and depths for point cloud visualization.
-    #     output_pointcloud = {
-    #         'sampled': {'ctxt': dict(), 'trgt': dict()},
-    #         'gt': {'ctxt': dict(), 'trgt': dict()}
-    #     }
-        
-    #     for modality, logs_modality in outputs.items():
-
-    #         if modality != 'optical_flow':
-    #             for key, data in logs_modality.items():
-    #                 if key != 'inputs' and modality != 'conditioning':
-    #                     split = 'sampled'
-    #                     other_split = 'gt'
-    #                 else:
-    #                     split = 'gt'
-    #                     other_split = 'sampled'
-                    
-    #                 if 'trgt' in modality:
-    #                     frame = 'trgt'
-    #                 else:
-    #                     frame = 'ctxt'
-
-    #                 # assert False, "Key rgb_crds not in dict for GT"
-
-    #                 # Formats depth.
-    #                 if 'depth' in modality:
-    #                     if key in ['inputs', 'samples']:
-    #                         depths = data.mean(1)
-
-
-    #                         # if key == 'samples':
-    #                         #     gt_depth_filtered, _ = filter_depth(outputs[modality]['inputs'])
-    #                         #     print(f'SCALE {key} DEPTH {frame}', depths.mean())
-    #                         #     print(f'SCALE gt DEPTH {frame}', gt_depth_filtered.mean())
-    #                         #     depths = depths * gt_depth_filtered.mean() / depths.mean()
-    #                         #     print(f'SCALE {key} RESCALED DEPTH {frame}', depths.mean())
-
-
-    #                         HW = pixel_grid_coordinates(depths.size(1), depths.size(2))
-    #                         pixel_coordinates = rearrange(HW, 'h w c -> c (h w)')
-
-    #                         world_crds = list()
-    #                         poses = list()
-
-    #                         for k in range(data.size(0)):
-    #                             camera = cameras[k][0] if frame == 'ctxt' else cameras[k][1]
-                                # depth = rearrange(depths[k], 'h w -> 1 (h w)')
-
-                                # # Un-project to world coordinates
-                                # world_pts = camera.pixel_to_world(pixel_coordinates, depths=depth)
-                                # world_coordinates = to_euclidean_space(world_pts).numpy()
-
-                                # world_crds.append(rearrange(world_coordinates, 'c n -> n c'))
-                                # c2w = camera.c2w.numpy()
-                                # poses.append(c2w)
-
-    #                         # Stacks points and poses
-    #                         world_crds = np.stack(world_crds, axis=0) # (frame, hw, xyz=3)
-    #                         poses = np.stack(poses, axis=0) # (frame, 4, 4)
-
-    #                         output_pointcloud[split][frame]['world_crds'] = world_crds
-    #                         output_pointcloud[split][frame]['poses'] = poses
-
-    #                 # Format rgbs.
-    #                 elif 'intermediates' not in key:
-    #                     rgbs = torch.clamp(data, -1., 1.)
-    #                     rgbs = (rgbs + 1.0) / 2.0
-    #                     rgbs = rearrange(rgbs, 'n c h w -> n (h w) c').numpy() # (frame, hw, rgb=3)
-    #                     output_pointcloud[split][frame]['rgb_crds'] = rgbs
-
-    #                     # Copy in case no color is rendered
-    #                     if not 'rgbs_crds' in output_pointcloud[other_split][frame]:
-    #                         output_pointcloud[other_split][frame]['rgb_crds'] = rgbs
-
-    #     print('Shapes pointcloud viz')
-    #     for split, pc_viz_dict in output_pointcloud.items():
-    #         for modality, logs_modality in pc_viz_dict.items():
-    #             for k, data in logs_modality.items():
-    #                 if isinstance(data, np.ndarray):
-    #                     print(split, modality, k, data.shape)
-
-    #     np.savez(os.path.join(viz_path_pc, f'{dataset_name}_{scene}_.npz'), **output_pointcloud)
-
-    # # Create videos from samples.
-    # for modality, logs_modality in out.items():
-    #     for k, data in logs_modality.items():
-
-    #         if modality == 'depths':
-    #             if 'gt' in k:
-    #                 out[modality][k] = out[modality][k].mean(1, keepdims=True)
-    #             out[modality][k], _ = filter_depth(out[modality][k])
-    #             out[modality][k] = color_map_depth(out[modality][k].squeeze(1))
-
-    #         elif modality == 'rgbs':
-    #             out[modality][k] = torch.clamp(out[modality][k], -1., 1.)
-    #             out[modality][k] = (out[modality][k] + 1.0) / 2.0
-
-    #         elif modality == 'flows':
-    #             if 'mask' in k:
-    #                 out[modality][k] = repeat(out[modality][k], 'b h w -> b c h w', c=3)
-    #             else:
-    #                 out[modality][k] = (flow_to_color(out[modality][k][:,:2,:,:]) / 255)
-
-    #         # Save videos.
-    #         frames = rearrange(out[modality][k], 'b c h w -> b h w c')
-    #         frames = (frames * 255).type(torch.uint8)
-    #         torchvision.io.write_video(viz_path_videos / f'{scene}_{k}.mp4', frames, fps=5)
-        
-    #     # for k in ['gt', 'sampled']:
-    #     #     video_path = viz_path_videos / f'{scene}_{k}.mp4'
-    #     #     os.system(
-    #     #             f"ffmpeg -f concat -r 5 -safe 0 -i {video_path}  \
-    #     #             -vf 'drawtext=text={k}:fontcolor=white:fontsize=11:box=1:boxcolor=black@0.5:boxborderw=5:x=0:y=0' \
-    #     #             -y {video_path}"
-    #     #         )
-
-  
-    #     # # Concatenates videos.
-    #     # os.system(
-    #     #     f'ffmpeg -i "visualizations/medias/{modalities[0]}.mp4" -i "visualizations/medias/{modalities[1]}.mp4" -i "visualizations/medias/{modalities[2]}.mp4" \
-    #     #     -filter_complex vstack=inputs=3 -y "visualizations/medias/rgb_depth_flow_{frame}_{split}.mp4"'
-    #     # )
-
-    
-
+            
 if __name__ == "__main__":
     sample()

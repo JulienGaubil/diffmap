@@ -135,6 +135,8 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
         flow_raw = torch.load(flow_path) #(H,W,C=2)
         mask_flow_raw = torch.load(flow_mask_path)
 
+        flow_raw = flow_raw / 0.0213
+
         # Apply transformations.
         flow, flow_mask = self._preprocess_flow(flow_raw, mask_flow_raw)
         return flow, flow_mask
