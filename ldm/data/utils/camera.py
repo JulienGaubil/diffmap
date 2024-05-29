@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 # from utils.util import to_euclidean_space, to_projective_space
 
+
 def to_euclidean_space(homogeneous_points: Float[Tensor, "N+1 point"]) -> Float[Tensor, "N point"]:
     """Gets N-D Euclidean coordinates for points in associated projective space."""
     # Get homogeneous point with scale 1.
@@ -141,7 +142,7 @@ class Camera:
         im_plane_pts = to_projective_space(im_plane_coordinates) #(3,N)
         return im_plane_pts.to(self.dtype)
 
-    def im_plane_to_camera(
+    def im_plane_to_local(
             self,
             im_plane_pts: Float[Tensor, "xyw=3 point"],
             depths: Float[Tensor, " 1 point"] | None = None
@@ -164,7 +165,7 @@ class Camera:
 
         return local_pts
     
-    def camera_to_world(
+    def local_to_world(
             self,
             local_pts:  Float[Tensor, "xyzw=4 point"]
     ) -> Float[Tensor, "xyzw=4 point"]:
@@ -186,8 +187,8 @@ class Camera:
         """Unproject pixels in grid coordinates to the projective space associated to the 3D-Euclidean world space.
         """
         im_plane_pts = self.pixel_to_im_plane(pixel_coordinates)
-        local_pts = self.im_plane_to_camera(im_plane_pts, depths)
-        world_pts =  self.camera_to_world(local_pts)
+        local_pts = self.im_plane_to_local(im_plane_pts, depths)
+        world_pts =  self.local_to_world(local_pts)
         return world_pts
     
     #################### Projection from world to 2D pixel grid coordinates ###############################
@@ -272,3 +273,16 @@ class Camera:
         transf = torch.diag([1,-1,-1], dtype=self.dtype)
         self.extrinsincs.R = transf @ self.R
         self.extrinsincs.t = (transf @ self.t).resize(3)
+
+
+
+def K_to_intrinsics(K: Float[Tensor, "3 3"], resolution: list[int,int]) -> Intrinsics:
+    print(K)
+    fx, fy = torch.diag(K)[:2]
+    cx, cy = K[:2,2]
+    skew = K[0,1]
+
+    intrinsics = Intrinsics(**{'fx': fx, 'fy': fy, 'cx': cx, 'cy': cy, 'skew': skew, 'resolution': resolution})
+    print(intrinsics)
+
+    return intrinsics

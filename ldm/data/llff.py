@@ -161,7 +161,7 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
 
         # Load target, context frames.
         data = {}
-        data['indices'] = torch.tensor([index, index + 1])
+        data['indices'] = torch.tensor([index, index + self.stride])
         data[self.ctxt_key] = self._get_im(prev_im_path)
         data[self.trgt_key] = self._get_im(curr_im_path)
 

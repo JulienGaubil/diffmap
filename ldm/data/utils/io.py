@@ -9,7 +9,9 @@ from torch import Tensor
 from pathlib import Path
 
 
-def load_exr(filepath: Path) -> Float[Tensor, "height width"] :
+def load_exr(filepath: Path | str) -> Float[Tensor, "height width"] :
+    filepath = Path(filepath)
+
     # Load bytes.
     exrfile = exr.InputFile(filepath.as_posix())
     raw_bytes = exrfile.channel('B', Imath.PixelType(Imath.PixelType.FLOAT))
