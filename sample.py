@@ -37,6 +37,7 @@ from ldm.modules.flowmap.visualization.color import apply_color_map_to_image
 from ldm.data.utils.camera import pixel_grid_coordinates, to_euclidean_space, to_projective_space, Camera, K_to_intrinsics, Extrinsics
 from ldm.visualization import filter_depth
 from ldm.modules.flowmap.flow.flow_predictor import Flows
+from ldm.misc.projection import compute_flow_projection, compute_consistency_mask
 
 MULTINODE_HACKS = False
 
@@ -62,7 +63,7 @@ def print_tensor_dict(dictionnary: dict, root: bool = True) -> dict:
             if all([isinstance(s, (Tensor, np.ndarray)) for s in v]):
                 tmp_dict[k] = [s.shape for s in v]
             elif all([isinstance(s, Camera) for s in v]):
-                tmp_dict[k] = [f'cam_{i}' for i in range(len(v))]
+                tmp_dict[k] = len(v)
 
     if root:
         print(json.dumps(tmp_dict, indent=4))
@@ -484,7 +485,7 @@ def sample(config: DictConfig) -> None:
 
     # Sampling loop.
     for i, batch in tqdm(enumerate(dataloader_val)):
-
+        
         print(f'Frame indices val batch {i} : ', batch['indices'])
 
         # Sample model.
@@ -549,6 +550,7 @@ def sample(config: DictConfig) -> None:
             depths_flowmap, valid_depths = filter_depth(depths_flowmap)
 
             valid_depths = valid_depths.float().to(model.device)
+            # TODO - to fix
             correspondence_weights_flowmap = valid_depths[:,:-1,:,:] * valid_depths[:,1:,:,:] # both depth points should be valid
             default_set(logs, [key,'ctxt','correspondence_weights'], correspondence_weights_flowmap[0].cpu())
             default_set(logs, [key,'trgt','correspondence_weights'], correspondence_weights_flowmap[1].cpu())
@@ -798,6 +800,7 @@ def sample(config: DictConfig) -> None:
 
     # Save video visualizations.
     if config.experiment_cfg.visualization:
+        viz_dict = dict()
 
         # Save RGB, depth, flow samples.
         for modality in ['rgbs', 'depths', 'flows']:
@@ -806,6 +809,7 @@ def sample(config: DictConfig) -> None:
                 value = get_value(logs, keys)
                 if value is not None:
                     viz_images = prepare_visualization(value, keys)
+                    default_set(viz_dict, keys, viz_images)
                     video = (viz_images * 255).type(torch.uint8)
                     torchvision.io.write_video(os.path.join(viz_path_videos, f'{"_".join(keys)}.mp4'), video, fps=5)
         # Save correspondence masks samples.
@@ -816,11 +820,24 @@ def sample(config: DictConfig) -> None:
                 video = (viz_images * 255).type(torch.uint8)
                 torchvision.io.write_video(os.path.join(viz_path_videos, f'{"_".join(keys)}.mp4'), video, fps=5)
         try:
-            from visualizations.code.create_figure_sampling import draw_text
-            os.system(f'python -m visualizations.code.create_figure_sampling {viz_path_videos.parent}')
-
+            from visualizations.code.create_figure_sampling import create_video
+            create_video(viz_dict, viz_path_videos.parent)
+            # os.system(f'python -m visualizations.code.create_figure_sampling {viz_path_videos.parent}')
         except ModuleNotFoundError:
             pass
+
+        # Compute consistency mask.
+        for key in ['gt', 'sampled']:
+            fwd_flows_gt = get_value(logs, [key, 'flows', 'forward'])
+            src_im_gt = rearrange(get_value(logs, ['gt', 'ctxt', 'rgbs']), 'n h w c -> n c h w')
+            trgt_im_gt = rearrange(get_value(logs, ['gt', 'trgt', 'rgbs']), 'n h w c -> n c h w')
+            masks = torch.stack(
+                [compute_consistency_mask(src_im_gt[k], trgt_im_gt[k], fwd_flows_gt[k]) for k in range(fwd_flows_gt.size(0))],
+                dim = 0
+            )
+
+            video = (repeat(masks, 'n h w -> n h w c', c=3) * 255).type(torch.uint8)
+            torchvision.io.write_video(os.path.join(viz_path_videos, f'{key}_consistency_masks.mp4'), video, fps=5)
 
             
 if __name__ == "__main__":
