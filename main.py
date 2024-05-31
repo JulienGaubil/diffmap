@@ -143,22 +143,25 @@ def run(config: DictConfig) -> None:
             "If you want to resume training in a new log folder, "
             "use -n/--name in combination with --resume_from_checkpoint"
         )
+
+    # trainer and callbacks
+    trainer_kwargs = dict()
+    
+    # Resume experiment from checkpoint.
     if config.experiment_cfg.resume is not None:
         if not os.path.exists(config.experiment_cfg.resume):
             raise ValueError("Cannot find {}".format(config.experiment_cfg.resume))
         if os.path.isfile(config.experiment_cfg.resume):
             paths = config.experiment_cfg.resume.split("/")
-            # idx = len(paths)-paths[::-1].index("logs")+1
-            # logdir = "/".join(paths[:idx])
             logdir = "/".join(paths[:-2])
-            ckpt = config.experiment_cfg.resume
+            ckpt = Path(config.experiment_cfg.resume)
         else:
             assert os.path.isdir(config.experiment_cfg.resume), config.experiment_cfg.resume
-            logdir = config.experiment_cfg.resume.rstrip("/")
-            ckpt = os.path.join(logdir, "checkpoints", "last.ckpt")
-
-        config.experiment_cfg.resume_from_checkpoint = ckpt
-        _tmp = logdir.split("/")
+            logdir = Path(config.experiment_cfg.resume.rstrip("/"))
+            ckpt = logdir / "checkpoints" / "last.ckpt"
+        
+        trainer_kwargs['resume_from_checkpoint'] = config.model.params.ckpt_path
+        _tmp = str(logdir).split("/")
         nowname = _tmp[-1]
     else:
         config.experiment_cfg.resume = ""
@@ -189,7 +192,9 @@ def run(config: DictConfig) -> None:
         model = instantiate_from_config(config.model)
         model.cpu()
 
-        if not config.experiment_cfg.finetune_from == "":
+        config.model.params.ckpt_path = str(ckpt)
+
+        if config.experiment_cfg.finetune_from != "":
             rank_zero_print(f"Attempting to load state from {config.experiment_cfg.finetune_from}")
             old_state = torch.load(config.experiment_cfg.finetune_from, map_location="cpu")
             if "state_dict" in old_state:
@@ -222,7 +227,7 @@ def run(config: DictConfig) -> None:
                     old_state[k] = modify_conv_weights(old_state[k], scale=scale, n=C_in_new//C_in_old, dim=1, copy_weights=copy_weights)
                     
             #check if we need to port output weights from 4ch to n*4 ch
-            keys_to_change_outputs_new = [
+            keys_to_change_outputs = [
                     "model.diff_out.0.weight",
                     "model.diff_out.0.bias",
                     "model.diff_out.2.weight",
@@ -233,49 +238,21 @@ def run(config: DictConfig) -> None:
                     "model_ema.diff_out2bias",
             ]
 
-            keys_to_change_outputs = [
-                    "model.diffusion_model.out.0.weight",
-                    "model.diffusion_model.out.0.bias",
-                    "model.diffusion_model.out.2.weight",
-                    "model.diffusion_model.out.2.bias",
-                    "model_ema.diffusion_modelout0weight",
-                    "model_ema.diffusion_modelout0bias",
-                    "model_ema.diffusion_modelout2weight",
-                    "model_ema.diffusion_modelout2bias",
-            ]
-
             rank_zero_print("Modifying weights and biases to multiply their number of output channels")
             #initializes randomly new output weights to match new implementation
             for k in range(len(keys_to_change_outputs)):
-                key_old = keys_to_change_outputs[k]
-                key_new = keys_to_change_outputs_new[k]
+                key = keys_to_change_outputs[k]
                 print("modifying output weights for compatibility")
-                output_weight_new = new_state[key_new] # size (C_out, C_in, kernel_size, kernel_size)
+                output_weight_new = new_state[key] # size (C_out, C_in, kernel_size, kernel_size)
                 C_out_new = output_weight_new.size(0)
-                C_out_old = old_state[key_old].size(0)
+                C_out_old = old_state[key].size(0)
 
                 assert C_out_new % C_out_old == 0 and  C_out_new >= C_out_old, f"Number of input channels for checkpoint and new U-Net should be multiple, got {C_out_new} and {C_out_old}"
                 print("modifying input weights for compatibility")
                 #repeats checkpoint weights C_in_new//C_in_old times along output weights channels=dim0
                 copy_weights = True
                 scale = 1 if copy_weights else 1e-8 #copies exactly weights if copy initialization
-                old_state[key_new] = modify_conv_weights(old_state[key_old], scale=scale, n=C_out_new//C_out_old, dim=0, copy_weights=copy_weights)
-
-            #if we load SD weights and still want to override with existing checkpoints
-            if config.model.params.ckpt_path is not None:
-                rank_zero_print(f"Attempting to load state from {config.model.params.ckpt_path}")
-                old_state = torch.load(config.model.params.ckpt_path, map_location="cpu")
-                if "state_dict" in old_state:
-                    rank_zero_print(f"Found nested key 'state_dict' in checkpoint, loading this instead")
-                    old_state = old_state["state_dict"]
-                #loads checkpoint weights
-                m, u = model.load_state_dict(old_state, strict=False)
-                if len(m) > 0:
-                    rank_zero_print("missing keys:")
-                    rank_zero_print(m)
-                if len(u) > 0:
-                    rank_zero_print("unexpected keys:")
-                    rank_zero_print(u)
+                old_state[key] = modify_conv_weights(old_state[key], scale=scale, n=C_out_new//C_out_old, dim=0, copy_weights=copy_weights)
 
             #loads checkpoint weights
             m, u = model.load_state_dict(old_state, strict=False)
@@ -287,6 +264,7 @@ def run(config: DictConfig) -> None:
                 rank_zero_print(u)
 
             #if we load SD weights and still want to override with existing checkpoints
+            assert config.model.params.ckpt_path is not None
             if config.model.params.ckpt_path is not None:
                 rank_zero_print(f"Attempting to load state from {config.model.params.ckpt_path}")
                 old_state = torch.load(config.model.params.ckpt_path, map_location="cpu")
@@ -301,9 +279,6 @@ def run(config: DictConfig) -> None:
                 if len(u) > 0:
                     rank_zero_print("unexpected keys:")
                     rank_zero_print(u)
-
-        # trainer and callbacks
-        trainer_kwargs = dict()
 
         # default logger configs
         default_logger_cfgs = {
@@ -437,7 +412,7 @@ def run(config: DictConfig) -> None:
             # hence we monkey patch things
             from pytorch_lightning.trainer.connectors.checkpoint_connector import CheckpointConnector
             setattr(CheckpointConnector, "hpc_resume_path", None)
-
+        
         trainer = Trainer.from_argparse_args(trainer_opt, **trainer_kwargs)
         trainer.logdir = logdir  ###
 
