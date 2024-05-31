@@ -327,13 +327,6 @@ class DDPMDiffmap(DDPM):
         #     "forward_mask": flows_mask_fwd,
         #     "backward_mask": flows_mask_bwd,
         # }
-        flows = {
-            "forward": flows.forward * 0.0213,
-            "backward": flows.backward * 0.0213,
-            "forward_mask": flows.forward_mask,
-            "backward_mask": flows.backward_mask,
-        }
-        flows = Flows(**flows)
 
         # if 'camera_ctxt' in batch and 'camera_trgt' in batch:
         #     intrinsics_ctxt = torch.stack([cam.K for cam in batch['camera_ctxt']], dim=0).float() #(frame 3 3)
