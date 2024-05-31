@@ -92,3 +92,4 @@ experiment_cfg:
   resume: null # to overwrite
   visualization: false
   save_points: true
+  autoregressive: false

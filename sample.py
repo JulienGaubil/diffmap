@@ -257,8 +257,28 @@ def default_log(logs_dict: dict, modality: str, batch_logs: dict) -> None:
         if 'depths' in keys_logs_dict:
             print(0.02, value.shape)
         value = process_value(value, keys_logs_dict)
-        default_add(dictionnary=logs_dict, keys=keys_logs_dict, value=value)    
+        default_add(dictionnary=logs_dict, keys=keys_logs_dict, value=value)
 
+
+def prepare_batch(logs_dict: dict, batch: dict, dataset) -> dict:
+    batch_for_model = dict()
+    batch = copy.deepcopy(batch)
+
+    # Batch attributes.
+    for key in ['indices', 'camera_ctxt', 'depth_trgt', 'depth_ctxt', 'camera_trgt', 'optical_flow', 'optical_flow_bwd', 'optical_flow_mask', 'optical_flow_bwd_mask']:
+        batch_for_model[key] = batch[key]
+    
+
+    # Sampled attributes.
+    sampled_imgs = get_value(logs_dict, ['sampled','trgt','rgbs'])
+    assert len(sampled_imgs) > 0
+    batch_for_model[dataset.ctxt_key] = sampled_imgs[-1]
+    batch_for_model[dataset.trgt_key] = torch.zeros_like(batch[dataset.trgt_key])
+
+    # TODO - remove hacks.
+    batch_for_model['correspondence_weights'] = torch.ones_like(batch['depth_ctxt'][:,:,0])
+
+    return batch_for_model
 
 @hydra.main(
         version_base=None,
@@ -465,13 +485,15 @@ def sample(config: DictConfig) -> None:
 
     # Creates datamodule, dataloader, dataset
     assert len(config.data.params.validation.params.val_scenes) == 1, "Provide a single validation scene for sampling."
+    if config.experiment_cfg.autoregressive:
+        config.data.params.batch_size = 1
     scene = config.data.params.validation.params.val_scenes[0]
     dataset_name = Path(config.data.params.validation.params.root_dir).name
     data = instantiate_from_config(config.data) # cree le datamodule
     data.prepare_data()
     data.setup() #cree les datasets
     dataloader_val = data.val_dataloader()
-    # dataset_train = data.datasets['train']
+    dataset_val = data.datasets['validation']
 
     # Visualization paths.
     viz_path_videos = Path(os.path.join('visualizations/medias/sampling', dataset_name, scene, 'modalities'))
@@ -488,10 +510,16 @@ def sample(config: DictConfig) -> None:
         
         print(f'Frame indices val batch {i} : ', batch['indices'])
 
+        # Prepare input batch.
+        if i > 0 and config.experiment_cfg.autoregressive:
+            batch_for_model = prepare_batch(logs, batch, dataset_val)
+        else:
+            batch_for_model = batch
+
         # Sample model.
         log_image_kwargs = config.lightning.callbacks.image_logger.params.log_images_kwargs
         batch_logs = model.log_images(
-            batch,
+            batch_for_model,
             **log_image_kwargs
         )
 
