@@ -28,7 +28,10 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
 
             # Prepare depths paths.
             depth_paths = sorted((self.root_dir / scene / "depth_exr").iterdir())[::self.stride]
-            self.depth_pairs_paths += [(Path(depth_paths[idx]), Path(depth_paths[idx+1])) for idx in range(len(depth_paths) - 1)]
+            self.depth_pairs_paths += [
+                (Path(depth_paths[idx]), [Path(p) for p in depth_paths[idx + 1 : idx + self.n_future + 1]])
+                for idx in range(len(depth_paths) - self.n_future)
+            ]
 
             # Prepare intrinsics.
             intrinsics_file = self.root_dir / scene / "intrinsics.txt"
@@ -48,7 +51,10 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
 
             # Load camera pairs.
             cameras = [Camera(intrinsics=intrinsics, extrinsics=extrinsics[i]) for i in range(len(extrinsics))]
-            self.cameras_pairs += [(cameras[idx], cameras[idx+1]) for idx in range(len(cameras) - 1)]
+            self.cameras_pairs += [
+                (cameras[idx], [cam for cam in cameras[idx + 1  : idx + self.n_future + 1]])
+                for idx in range(len(cameras) - self.n_future)
+            ]
         
         # Create transforms.
         self.tform_depth, self.tform_correspondence_weights = self.initialize_depth_tform()
@@ -72,18 +78,36 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
         intrinsics_transforms = transforms.Compose(intrinsics_transforms)
         return intrinsics_transforms
 
+    def _get_flow(self, flow_paths: list[Path], flow_mask_paths: list[Path]) -> tuple[Float[Tensor, "n_future height width 3"], Float[Tensor, "n_future height width"]]:
+        flows = list()
+        flow_masks = list()
+        for k in range(len(flow_paths)):
+            # Load flow and mask.
+            flow_raw = torch.load(flow_paths[k]) #(H,W,C=2)
+            mask_flow_raw = torch.load(flow_mask_paths[k])
+
+            # Apply transformations.
+            flow, flow_mask = self._preprocess_flow(flow_raw, mask_flow_raw)
+            flows.append(flow)
+            flow_masks.append(flow_mask)
+        
+        flows = torch.stack(flows, dim=0)
+        flow_masks = torch.stack(flow_masks, dim=0)
+        return flows, flow_masks
+
     def _get_depth(self, path: Path) -> Float[Tensor, "height width 3"]:
         depth_raw = load_exr(path) # (H, W)
         return self.tform_depth(depth_raw)
     
     def _get_camera_pair(self, index: int) -> tuple[Camera, Camera]:
-        prev_camera, curr_camera = self.cameras_pairs[index]
+        prev_camera, future_cameras = self.cameras_pairs[index]
 
         # Apply intrinsics transformations.
         prev_camera.intrinsics = self.tform_intrinsics(prev_camera.intrinsics)
-        curr_camera.intrinsics = self.tform_intrinsics(curr_camera.intrinsics)
+        for k in range(self.n_future):
+            future_cameras[k].intrinsics = self.tform_intrinsics(future_cameras[k].intrinsics)
 
-        return prev_camera, curr_camera
+        return prev_camera, future_cameras
         
     # def _get_correspondence_weights(self, index: int) ->  Float[Tensor, "height width"]:
     #     # Load and preprocess correspondence weights.
@@ -98,59 +122,65 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
             pair_idx = np.arange(2)
 
         # Define paths and indices.
-        prev_im_path, curr_im_path = [self.frame_pair_paths[index][k] for k in pair_idx]
-        prev_depth_path, curr_depth_path = [self.depth_pairs_paths[index][k] for k in pair_idx]
         if pair_idx[0] == 0:
-            fwd_flow_path = self.flow_fwd_paths[index]
-            bwd_flow_path = self.flow_bwd_paths[index]
-            fwd_flow_mask_path = self.flow_fwd_mask_paths[index]
-            bwd_flow_mask_path = self.flow_bwd_mask_paths[index]
-            prev_camera, curr_camera = self._get_camera_pair(index)
+            prev_im_path, future_im_paths = self.frame_pair_paths[index]
+            prev_depth_path, future_depth_paths = self.depth_pairs_paths[index]
+            fwd_flow_paths = self.flow_fwd_paths[index]
+            bwd_flow_paths = self.flow_bwd_paths[index]
+            fwd_flow_mask_paths = self.flow_fwd_mask_paths[index]
+            bwd_flow_mask_paths = self.flow_bwd_mask_paths[index]
+            prev_camera, future_cameras = self._get_camera_pair(index)
+            indices = torch.arange(index, index + (self.stride * self.n_future) + 1, self.stride)
         else:
             # Flipping trajectory
-            fwd_flow_path = self.flow_bwd_paths[index]
-            bwd_flow_path = self.flow_fwd_paths[index]
-            fwd_flow_mask_path = self.flow_bwd_mask_paths[index]
-            bwd_flow_mask_path = self.flow_fwd_mask_paths[index]
-            curr_camera, prev_camera = self._get_camera_pair(index)
+            fwd_flow_paths = self.flow_bwd_paths[index][::-1]
+            bwd_flow_paths = self.flow_fwd_paths[index][::-1]
+            fwd_flow_mask_paths = self.flow_bwd_mask_paths[index][::-1]
+            bwd_flow_mask_paths = self.flow_fwd_mask_paths[index][::-1]
 
+            # Invert order for future frames.
+            prev_camera, next_cameras = self._get_camera_pair(index)
+            prev_im_path, next_im_paths = self.frame_pair_paths[index]
+            prev_depth_path, next_depth_paths = self.depth_pairs_paths[index]
+
+            future_cameras = next_cameras[:-1][::-1] + [prev_camera]
+            future_im_paths = next_im_paths[:-1][::-1] + [prev_im_path]
+            future_depth_paths = next_depth_paths[:-1][::-1] + [prev_depth_path]
+
+            prev_camera = next_cameras[-1]
+            prev_im_path = next_im_paths[-1]
+            prev_depth_path = next_depth_paths[-1]
+            indices = torch.arange(index, index + (self.stride * self.n_future) + 1, self.stride).flip(dims=[0])
 
         # Load target, context frames.
         data = {}
-        data['indices'] = torch.tensor([index, index + self.stride])[pair_idx]
+        data['indices'] = indices
         data[self.ctxt_key] = self._get_im(prev_im_path)
-        data[self.trgt_key] = self._get_im(curr_im_path)
-
-        # print(data['indices'])
-        # print(prev_im_path, curr_im_path)
-        # print(fwd_flow_path, bwd_flow_path)
-        # print(fwd_flow_mask_path, bwd_flow_mask_path)
-        # print(prev_depth_path, curr_depth_path)
-        # print('')
+        data[self.trgt_key] = torch.stack([self._get_im(p) for p in future_im_paths], dim=0) 
 
         # Load flow
-        flow_fwd, flow_fwd_mask = self._get_flow(fwd_flow_path, fwd_flow_mask_path)
-        flow_bwd, flow_bwd_mask = self._get_flow(bwd_flow_path, bwd_flow_mask_path)
+        flows_fwd, flow_fwd_masks = self._get_flow(fwd_flow_paths, fwd_flow_mask_paths)
+        flows_bwd, flow_bwd_masks = self._get_flow(bwd_flow_paths, bwd_flow_mask_paths)
         data.update({
-            'optical_flow': flow_fwd,
-            'optical_flow_bwd': flow_bwd,
-            'optical_flow_mask': flow_fwd_mask,
-            'optical_flow_bwd_mask': flow_bwd_mask
+            'optical_flow': flows_fwd,
+            'optical_flow_bwd': flows_bwd,
+            'optical_flow_mask': flow_fwd_masks,
+            'optical_flow_bwd_mask': flow_bwd_masks
             }
         )
 
         # Load depths and correspondence weights.
         data.update({
             'depth_ctxt': self._get_depth(prev_depth_path),
-            'depth_trgt': self._get_depth(curr_depth_path)
+            'depth_trgt': torch.stack([self._get_depth(p) for p in future_depth_paths], dim=0)
         })
         # TODO - remove hack
-        data['correspondence_weights'] = torch.ones_like(data['depth_ctxt'][:,:,0])
+        data['correspondence_weights'] = torch.ones_like(data['depth_trgt'][:,:,:,0])
 
         # Load cameras.
         data.update({
             'camera_ctxt': prev_camera,
-            'camera_trgt': curr_camera
+            'camera_trgt': future_cameras
         })
         
         return data

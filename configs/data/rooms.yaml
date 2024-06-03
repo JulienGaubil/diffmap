@@ -2,6 +2,7 @@ target: ldm.data.datamodule.DataModuleFromConfig
 
 # Common image shape used.
 image_size: 512
+n_future: 1
 
 params:
   batch_size: 4
@@ -17,6 +18,7 @@ params:
       scenes: null
       val_scenes: null
       stride: 1
+      n_future: ${n_future}
       flip_trajectories: false
       image_transforms:
       - target: torchvision.transforms.Resize
@@ -36,6 +38,7 @@ params:
       scenes: null
       val_scenes: null
       stride: 1
+      n_future: ${n_future}
       flip_trajectories: false
       image_transforms:
       - target: torchvision.transforms.Resize

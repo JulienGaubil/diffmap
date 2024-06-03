@@ -10,6 +10,7 @@ defaults:
 
 # Overrides image size in data and model children configs.
 image_size: 64
+n_future: 1
 scenes: '000001'
 val_scenes: null
 
