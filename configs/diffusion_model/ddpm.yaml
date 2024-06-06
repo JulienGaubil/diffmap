@@ -18,14 +18,6 @@ params:
   parameterization: eps
   unet_trainable: all  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn, false)
   compute_weights: True
-  modalities_in: #diffusion modalities
-  - trgt
-  - optical_flow
-  modalities_out: #modalities as output of the U-Net
-  - trgt
-  - optical_flow
-  - depth_trgt
-  - depth_ctxt
   ckpt_path: null
 
   cond_stage_config:

@@ -19,8 +19,11 @@ from ldm.misc.util import instantiate_from_config, modify_conv_weights, rank_zer
 from ldm.modules.flowmap.visualization.depth import color_map_depth
 from ldm.modules.flowmap.visualization.color import apply_color_map_to_image
 
-# Enable arithmetic division in .yaml file with keyword "divide".
+# Enable arithmetic operations in .yaml file with keywords "divide" or "multiply" or "linear".
 OmegaConf.register_new_resolver("divide", (lambda x, y: x//y), replace=True)
+OmegaConf.register_new_resolver("multiply", (lambda x, y: x*y), replace=True)
+OmegaConf.register_new_resolver("linear", (lambda a, b, c: a * b + c), replace=True)
+
 
 
 MULTINODE_HACKS = False
@@ -190,9 +193,7 @@ def run(config: DictConfig) -> None:
 
         # model
         model = instantiate_from_config(config.model)
-        model.cpu()
-
-        config.model.params.ckpt_path = str(ckpt)
+        model.cpu()        
 
         if config.experiment_cfg.finetune_from != "":
             rank_zero_print(f"Attempting to load state from {config.experiment_cfg.finetune_from}")

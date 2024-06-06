@@ -6,12 +6,14 @@ defaults:
   - /diffusion_model@model: ddpm
   - /diffusion_model/model@model.params.unet_config: unet
   - /diffusion_model/loss@model.params.flowmap_loss_config: flowmap # flowmap loss config
+  - /modalities@model.params.modalities_config: diffmap
 
-# Overrides image size in data and model children configs.
-image_size: 64
-n_future: 1
+# Overrides image size in data, model and modalities children configs.
 scenes: null
 val_scenes: null
+image_size: 64
+n_future: 1
+channels_m: 3
 
 data:
   params:
@@ -37,21 +39,13 @@ model:
     parameterization: eps
     unet_trainable: all  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn, false)
     compute_weights: True
-    modalities_in: #diffusion modalities
-    - trgt
-    - optical_flow
-    modalities_out: #modalities as output of the U-Net
-    - trgt
-    - optical_flow
-    - depth_trgt
-    - depth_ctxt
     ckpt_path: null
     scheduler_config: null
 
     unet_config:
       params:
-        in_channels: 9 #number of input channels U-Net, should be multiple of 4 (original size)
-        out_channels: 12 #number of output channels U-Net, should be multiple of 4 (original size)
+        in_channels: ${linear:${n_future}, 6, 3} #number of input channels U-Net, 6 = 2*3 noisy input channels + 3 for conditionning
+        out_channels: ${linear:${n_future}, 9, 3} #number of output channels U-Net, (rbg trgt + depth trgt + flow) * n_future + depth_ctxt 3*3 + 3 noisy output channels
         model_channels: 320 #number of intermediate layer channels across the U-Net
         attention_resolutions: [ 4, 2, 1]
         # use_spatial_transformer: True
