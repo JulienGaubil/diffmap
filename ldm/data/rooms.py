@@ -5,6 +5,7 @@ from jaxtyping import Float
 from torch import Tensor
 from pathlib import Path
 from torchvision import transforms
+from einops import rearrange
 
 from .llff import LLFFDiffmapDataset
 from .utils.io import load_exr
@@ -152,11 +153,17 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
             prev_depth_path = next_depth_paths[-1]
             indices = torch.arange(index, index + (self.stride * self.n_future) + 1, self.stride).flip(dims=[0])
 
-        # Load target, context frames.
         data = {}
-        data['indices'] = indices
-        data[self.ctxt_key] = self._get_im(prev_im_path)
-        data[self.trgt_key] = torch.stack([self._get_im(p) for p in future_im_paths], dim=0) 
+
+        # Load target, context frames.
+        ctxt_ims = rearrange(self._get_im(prev_im_path), 'h w c -> () h w c')
+        trgt_ims = torch.stack([self._get_im(p) for p in future_im_paths], dim=0)
+        data.update({
+            self.ctxt_key: ctxt_ims,
+            self.trgt_key: trgt_ims,
+            'indices': indices
+            }
+        )
 
         # Load flow
         flows_fwd, flow_fwd_masks = self._get_flow(fwd_flow_paths, fwd_flow_mask_paths)
@@ -170,18 +177,22 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
         )
 
         # Load depths and correspondence weights.
+        depths_ctxt = rearrange(self._get_depth(prev_depth_path), 'h w c -> () h w c')
+        depths_trgt = torch.stack([self._get_depth(p) for p in future_depth_paths], dim=0)
+        weights = torch.ones_like(depths_trgt[:,:,:,0]) # TODO - remove hack
         data.update({
-            'depth_ctxt': self._get_depth(prev_depth_path),
-            'depth_trgt': torch.stack([self._get_depth(p) for p in future_depth_paths], dim=0)
-        })
-        # TODO - remove hack
-        data['correspondence_weights'] = torch.ones_like(data['depth_trgt'][:,:,:,0])
+            'depth_ctxt': depths_ctxt,
+            'depth_trgt': depths_trgt,
+            'correspondence_weights': weights
+            }
+        )
 
         # Load cameras.
         data.update({
             'camera_ctxt': prev_camera,
             'camera_trgt': future_cameras
-        })
+            }
+        )
         
         return data
 

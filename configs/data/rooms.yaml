@@ -1,6 +1,6 @@
 target: ldm.data.datamodule.DataModuleFromConfig
 
-# Common image shape used.
+# Default params used.
 image_size: 512
 n_future: 1
 
