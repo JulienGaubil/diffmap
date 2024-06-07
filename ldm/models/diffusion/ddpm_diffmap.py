@@ -1,9 +1,12 @@
+from jaxtyping import Int
+from omegaconf import DictConfig
+
 from .ddpm import *
 from .diffusion_wrapper import DiffusionMapWrapper
-
 from ldm.modules.flowmap.flow import Flows
 from ldm.models.diffusion.ddim import DDIMSamplerDiffmap
 from ldm.models.diffusion.types import Sample, DiffusionOutput
+from ldm.misc.modalities import Modalities
 
 __conditioning_keys__ = {'concat': 'c_concat',
                          'crossattn': 'c_crossattn',
@@ -12,33 +15,56 @@ __conditioning_keys__ = {'concat': 'c_concat',
 
 class DDPMDiffmap(DDPM):
     """main class"""
-    def __init__(self,
-                cond_stage_config,
-                num_timesteps_cond=None,
-                cond_stage_key="image", #key in batches (:=dicts) of the conditioning signal (eg could be images, text…)
-                cond_stage_trainable=False,
-                concat_mode=True,
-                cond_stage_forward=None,
-                conditioning_key=None, #defines the type of conditioning ie cross attention, concatenation, hybrid
-                unet_trainable=True,
-                modalities_in=['nfp'],
-                modalities_out=['nfp'],
-                flowmap_loss_config=None,
-                compute_weights=False,
-                *args, **kwargs):
+    def __init__(
+        self,
+        cond_stage_config: DictConfig,
+        modalities_config: ListConfig,
+        num_timesteps_cond: int | None = None,
+        cond_stage_key: str = "image", #key in batches (:=dicts) for the conditioning signal (eg could be images, text…)
+        cond_stage_trainable: bool = False,
+        concat_mode: bool = True,
+        cond_stage_forward = None,
+        conditioning_key = None, #defines the type of conditioning (cross attention, concatenation, hybrid)
+        unet_trainable: bool = True,
+        n_future: int = 1,
+        flowmap_loss_config: DictConfig | None = None,
+        compute_weights: bool = False,
+        *args,
+        **kwargs
+    ) -> None:
+
         self.num_timesteps_cond = default(num_timesteps_cond, 1)
         assert self.num_timesteps_cond <= kwargs['timesteps']
-        # for backwards compatibility after implementation of DiffusionWrapper
+
+        # For backwards compatibility with class DiffusionMapWrapper.
         if conditioning_key is None:
             conditioning_key = 'concat' if concat_mode else 'crossattn'
         if cond_stage_config == '__is_unconditional__':
             conditioning_key = None
         ckpt_path = kwargs.pop("ckpt_path", None)
         ignore_keys = kwargs.pop("ignore_keys", [])
-        model = DiffusionMapWrapper(kwargs['unet_config'], conditioning_key, kwargs['image_size'], compute_weights=compute_weights) #U-Net
 
+        # Instantiate modalities.
+        self.modalities_in = Modalities(modalities_config.modalities_in)
+        self.modalities_out = Modalities(modalities_config.modalities_out)
+        assert len(set([modality.channels_m for modality in self.modalities_in.modality_list])) <= 1, "Found different number of channels in input modalities."
+        assert len(set([modality.channels_m for modality in self.modalities_out.modality_list])) <= 1, "Found different number of channels in output modalities."
+        assert self.modalities_out.modality_list[0].channels_m == self.modalities_in.modality_list[0].channels_m, "Input and output modalities should have same individual channel counts."
+        self.channels_m = self.modalities_out.modality_list[0].channels_m
+
+        # Instantiate model.
+        assert self.modalities_out.n_noisy_channels == self.modalities_in.n_noisy_channels
+        kwargs['channels'] = self.modalities_in.n_noisy_channels #enforce number of noisy channels for model
+        model = DiffusionMapWrapper(
+            kwargs['unet_config'],
+            conditioning_key, kwargs['image_size'],
+            modalities_out=self.modalities_out,
+            compute_weights=compute_weights,
+            n_future=n_future,
+        ) #U-Net
         super().__init__(conditioning_key=conditioning_key, *args, **kwargs, model=model)
 
+        # Instantiate conditioning encoder.
         self.cond_stage_trainable = cond_stage_trainable
         self.unet_trainable = unet_trainable
         self.cond_stage_key = cond_stage_key
@@ -47,24 +73,20 @@ class DDPMDiffmap(DDPM):
         self.clip_denoised = False
         self.bbox_tokenizer = None
 
+        # Load checkpoint.
         self.restarted_from_ckpt = False
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys)
             self.restarted_from_ckpt = True
 
         # Diffmap specific
-        self.modalities_in = modalities_in
-        self.modalities_out = modalities_out
-        assert self.model.diffusion_model.out_channels % len(self.modalities_out) == 0, "Number of output channels should be a multiple of number of output modalities"
-        self.channels_m = self.model.diffusion_model.out_channels // len(self.modalities_out)
-
-        if len(self.modalities_in) > 0:
-            assert self.channels % len(self.modalities_in) == 0,  "Number of input channels should be a multiple of number of input modalities"
-            assert self.channels_m == self.model.diffusion_model.out_channels // len(self.modalities_out), "Number of channels for every modality should match be equal for input and output"
-        else: #case where only conditioning as input
+        self.n_future = n_future
+        # Running without diffusion.
+        if self.channels == 0:
             assert self.parameterization == "x0", "No denoising mode only allowed with x0 parameterization mode"
             assert self.model.conditioning_key in ['concat', 'hybrid'], "No input modalities or conditioning for U-Net"
 
+        # Instantiate flowmap loss.
         if flowmap_loss_config is not None:
             self.flowmap_loss_wrapper = self.instantiate_flowmap_loss(flowmap_loss_config)
 
@@ -177,18 +199,6 @@ class DDPMDiffmap(DDPM):
             return [opt], scheduler
         return opt
     
-    def split_modalities(
-            self,
-            x: Float[Tensor, "_ 3*C _ _"],
-            modalities: list[str],
-            C: int = None,
-        ) -> dict[str, Float[Tensor, "_ C _ _"]]:
-        # Splits input tensor along every modality of chunk size C
-        C = default(C, self.channels_m)
-        assert C*len(modalities) == x.size(1), f"Tried splitting a tensor along dim 1 of size {x.size(1)} in {len(modalities)} chunks of size {C}"
-        
-        return dict(zip(modalities, torch.split(x, C, dim=1)))
-
     def _get_denoise_row_from_list(self, samples, desc='', modality=None):
         denoise_row = []
         for zd in tqdm(samples, desc=desc):
@@ -215,10 +225,18 @@ class DDPMDiffmap(DDPM):
             c = getattr(self.cond_stage_model, self.cond_stage_forward)(c)
         return c
 
+    def get_input_modality(self, batch, k) -> Float[Tensor, "sample (frame channel) height width"]:
+        x = batch[k]
+        if len(x.shape) == 4:
+            x = x[..., None]
+        x = rearrange(x, 'b f h w c -> b (f c) h w')
+        x = x.to(memory_format=torch.contiguous_format).float()
+        return x
+
     @torch.no_grad()
     def get_input(self, batch, k, force_c_encode=False,
                     cond_key=None, return_original_cond=False, bs=None, return_flows_depths=False):
-        '''
+        """
         Returns the inputs and outputs required for a diffusion sampling process and to supervise the model.
         Inputs:
             - k: string, self.first_stage_key, key for target image x_0 in the batch
@@ -226,23 +244,25 @@ class DDPMDiffmap(DDPM):
             - (default): list [x, c] with x target image x_0, c conditioning signal
             - if force_c_encode: c is the feature encoding of the conditioning signal (eg with CLIP)
             - if return_original_cond: adds xc, conditioning signal (non-encoded)
-        '''
+        """
         if cond_key is None: #mostly the case
                 cond_key = self.cond_stage_key
 
         # Get input modalities.
         if len(self.modalities_in) > 0:
             x_list = list()
-            for modality in self.modalities_in:
+            for modality in self.modalities_in.modality_list:
                 #encodes target image in VAE latent space
-                x = super().get_input(batch, modality) #image target clean x_0
+                x = self.get_input_modality(batch, modality.name) #image target clean x_0
                 if bs is not None:
                     x = x[:bs]
                 x = x.to(self.device)
                 x_list.append(x)
             x = torch.cat(x_list, dim=1)
         else: #only conditioning as input
-            b, _, h, w = super().get_input(batch, cond_key).size()
+            b, _, h, w = self.get_input_modality(batch, cond_key).size()
+            if bs is not None:
+                b = min(b, bs)
             x = torch.zeros((b, 0, h, w), device=self.device)
 
         # Get conditioning image.
@@ -253,9 +273,11 @@ class DDPMDiffmap(DDPM):
                 elif cond_key == 'class_label':
                     xc = batch
                 else: #mostly the case, cond_key is self.cond_stage_key and different from input image
-                    xc = super().get_input(batch, cond_key).to(self.device) #conditioning image
+                    xc = self.get_input_modality(batch, cond_key).to(self.device) #conditioning image
             else:
                 xc = x
+            if bs is not None:
+                xc = xc[:bs]
 
             # Encode conditioning image.
             if (not self.cond_stage_trainable or force_c_encode) and self.model.conditioning_key != "concat":
@@ -285,12 +307,12 @@ class DDPMDiffmap(DDPM):
         if return_flows_depths: #TODO properly handle modalities
             bs = default(bs, x.size(0))
             bs = min(bs, x.size(0))
-            correspondence_weights = batch['correspondence_weights'][:bs,None,:,:].to(self.device)
+            correspondence_weights = batch['correspondence_weights'][:bs,:,:,:].to(self.device)
             flows = Flows(**{
-                "forward": batch['optical_flow'][:bs, None, :, :, :2].to(self.device),
-                "backward":  batch['optical_flow_bwd'][:bs, None, :, :, :2].to(self.device),
-                "forward_mask": batch['optical_flow_mask'][:bs, None, :, :].to(self.device),
-                "backward_mask": batch['optical_flow_bwd_mask'][:bs, None, :, :].to(self.device)
+                "forward": batch['optical_flow'][:bs, :, :, :, :2].to(self.device),
+                "backward":  batch['optical_flow_bwd'][:bs, :, :, :, :2].to(self.device),
+                "forward_mask": batch['optical_flow_mask'][:bs, :, :, :].to(self.device),
+                "backward_mask": batch['optical_flow_bwd_mask'][:bs, :, :, :].to(self.device)
                 }
             )
             out.extend([flows, correspondence_weights])
@@ -300,45 +322,41 @@ class DDPMDiffmap(DDPM):
 
     def get_input_flowmap(
             self,
-            depths: dict[str, Float[Tensor, "batch channels height width"]],
+            depths: Float[Tensor, "sample frame channels height width"],
             flows: Flows,
-            correspondence_weights: Float[Tensor, "batch pair height width"]
-        ) -> tuple[dict[str, Tensor], dict[str, Tensor], Float[Tensor, "batch frame height width"], Float[Tensor, "batch pair height width"]]:
-        # Prepare depth, should be (batch frame height width).
-        # correspondence_weights = correspondence_weights[:, None, :, :]
-        # Compute depth with exponential mapping.
+            correspondence_weights: Float[Tensor, "sample pair height width"]
+        ) -> tuple[dict[str, Tensor], dict[str, Tensor], Float[Tensor, "sample frame height width"], Float[Tensor, "sample pair height width"]]:
+        
+        # Prepare depths.
+        depths = self.to_depth(depths)
+        # TODO - properly handle modalities
+        depths = self.modalities_out.split_modalities_multiplicity(depths, modality_names=["depth_ctxt", "depth_trgt"])
         depths = torch.cat([
-            self.to_depth(depths["depth_ctxt"]),
-            self.to_depth(depths["depth_trgt"])
+            depths["depth_ctxt"],
+            depths["depth_trgt"]
             ],
             dim=1
         )
 
-        # # Prepare flow
-        # # flows_recon = rearrange(x_recon_flowmap["optical_flow"][:, None, :2, :, :], 'b f xy w h -> b f w h xy') #estimated clean forward flow, TODO, should be (batch pair height width 2)
-        # flows_fwd = flows["forward"][:, None, :, :, :2]  #gt clean forward flows, TODO, should be (batch pair height width 2)
-        # flows_bwd = flows["backward"][:, None, :, :, :2]  #gt clean backward flows, TODO, should be (batch pair height width 2)
-        # flows_mask_fwd = flows_masks["forward"][:, None, :, :] #gt clean forward flows consistency masks, TODO, should be (batch pair height width)
-        # flows_mask_bwd = flows_masks["backward"][:, None, :, :] #gt clean backward flows consistency masks, TODO, should be (batch pair height width)
-        
         # flows = {
-        #     "forward": flows_fwd,
-        #     "backward": flows_bwd,
-        #     "forward_mask": flows_mask_fwd,
-        #     "backward_mask": flows_mask_bwd,
+        #     "forward": flows.forward,
+        #     "backward": flows.backward,
+        #     "forward_mask": flows.forward_mask,
+        #     "backward_mask": flows.backward_mask,
         # }
-
+        # flows = Flows(**flows)
+    
         # if 'camera_ctxt' in batch and 'camera_trgt' in batch:
         #     intrinsics_ctxt = torch.stack([cam.K for cam in batch['camera_ctxt']], dim=0).float() #(frame 3 3)
         #     intrinsics_trgt = torch.stack([cam.K for cam in batch['camera_trgt']], dim=0).float() #(frame 3 3)
         #     intrinsics = torch.stack([intrinsics_ctxt, intrinsics_trgt], dim=1).to(self.device) #(frame pair=1 3 3)
         #     dummy_flowmap_batch['intrinsics'] = intrinsics
 
-        # Prepare flowmap dummy batch TODO remove hack
-        N, _ ,_, H, W = flows.forward.size()
+        # Prepare flowmap dummy batch - TODO remove hack
+        B, _ , H, W, _ = flows.forward.size()
         dummy_flowmap_batch = {
-            "videos": torch.zeros((N, 2, 3, H, W), dtype=torch.float32, device=self.device),
-            "indices": torch.tensor([0,1], device=self.device).repeat(N, 2),
+            "videos": torch.zeros((B, 1 + self.n_future, 3, H, W), dtype=torch.float32, device=self.device),
+            "indices": repeat(torch.arange(1 + self.n_future, device=self.device), 'f -> b f', b=B),
             "scenes": [""],
             "datasets": [""],
         }
@@ -388,17 +406,27 @@ class DDPMDiffmap(DDPM):
                 c = self.q_sample(x_start=c, t=tc, noise=torch.randn_like(c.float()))
         return self.p_losses(x, c, flows, correspondence_weights, t, *args, **kwargs)
 
-    def p_losses(self, x_start, cond, flows, correspondence_weights, t, noise=None):
+    def p_losses(
+        self,
+        x_start: Float[Tensor, "sample (frame channel) height width"],
+        cond: list[Float[Tensor, "sample channel height width"]],
+        flows: dict,
+        correspondence_weights: Float[Tensor, "sample pair=frame-1 height width"],
+        t: Int[Tensor, f"sample"] ,
+        noise: Float[Tensor, "sample (frame channel) height width"]| None = None
+    ) -> tuple[float, dict] | None:
+        """Compute diffusion and flowmap losses.
+        """
         # Enable not training - viz only TODO remove?
         if not self.unet_trainable:
             assert not any(p.requires_grad for p in self.model.parameters())
 
-        # Prepares input for U-Net diffusion
+        # Prepare input for U-Net diffusion.
         noise = default(noise, lambda: torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
 
-        # Compute model output and predicts clean x_0
-        model_output = self.apply_model(x_noisy, t, cond) #prediction of x_0 or noise from x_t depending on the parameterization
+        # Perform denoising step.
+        model_output = self.apply_model(x_noisy, t, cond) # denoising
         if self.parameterization == "x0":
             denoising_target = x_start
         elif self.parameterization == "eps":
@@ -406,66 +434,73 @@ class DDPMDiffmap(DDPM):
         else:
             raise NotImplementedError()
         
-        # Prepare loss inputs.
-        use_flowmap_loss = model_output.clean.size(1) > 0
-        use_denoising_loss = model_output.diff_output.size(1) > 0
-        assert use_flowmap_loss or use_denoising_loss, "No loss is optimized"
-        if use_denoising_loss:
-            denoising_output = self.split_modalities(model_output.diff_output, self.modalities_in)
-            denoising_target = self.split_modalities(denoising_target, self.modalities_in)
+        use_flowmap_loss = any([modality.channels_m * modality.multiplicity > 0 for modality in self.modalities_out.clean_modalities if modality.modality == "depth"]) 
+        use_denoising_loss = self.channels > 0
+        assert use_flowmap_loss or use_denoising_loss, "No loss is being optimized"
 
-        # Compute losses for every modality.
+        # Prepare diffusion loss inputs.
+        if use_denoising_loss:
+            denoising_output = self.modalities_out.split_modalities(model_output.diff_output, modality_names=self.modalities_out.names_denoised)
+            denoising_target = self.modalities_out.split_modalities(denoising_target, modality_names=self.modalities_out.names_denoised)
+
+            denoising_output = {k:rearrange(v, 'b (f c) h w -> (b f) c h w', c=self.channels_m) for k,v in denoising_output.items()}
+            denoising_target = {k:rearrange(v, 'b (f c) h w -> (b f) c h w', c=self.channels_m) for k,v in denoising_target.items()}
+
+        # Prepare flowmap loss inputs.
+        if use_flowmap_loss:
+            depths = rearrange(model_output.clean, 'b (f c) h w -> b f c h w', c=self.channels_m)
+            correspondence_weights = default(model_output.weights, correspondence_weights)
+            dummy_flowmap_batch, flows, depths, correspondence_weights = self.get_input_flowmap(depths, flows, correspondence_weights)
+
         loss_dict = {}
         prefix = 'train' if self.training else 'val'        
         loss_simple, loss_gamma, loss, loss_vlb  = 0, 0, 0, 0
         logvar_t = self.logvar.to(self.device)
-        logvar_t = logvar_t[t]
+        logvar_t = repeat(logvar_t[t], 'b -> b f', f=self.n_future)
+        logvar_t = rearrange(logvar_t, 'b f -> (b f)')
         if self.learn_logvar:
             loss_dict.update({'logvar': self.logvar.data.mean()})
-        
-        for modality in self.modalities_out:
-            # Flowmap loss.
-            if modality ==  "depth_ctxt" and use_flowmap_loss:
-                # Prepare flowmap inputs.
-                depths = self.split_modalities(model_output.clean, ["depth_ctxt", "depth_trgt"])
-                correspondence_weights = default(model_output.weights, correspondence_weights)
-                dummy_flowmap_batch, flows, depths, correspondence_weights = self.get_input_flowmap(depths, flows, correspondence_weights)
 
-                # Compute flowmap loss.
-                loss_flowmap = self.flowmap_loss_wrapper(dummy_flowmap_batch, flows, depths, correspondence_weights, self.global_step)
-                loss_m = loss_flowmap
-                loss_dict.update({f'{prefix}_flowmap/loss': loss_flowmap.clone().detach()})
-                loss += loss_m
- 
-            elif modality == "depth_trgt": #TODO remove hack and properly handle modalities
-                pass
-            elif use_denoising_loss:
-                # Compute diffusion loss.
-                loss_simple_m = self.get_loss(denoising_output[modality], denoising_target[modality], mean=False).mean([1, 2, 3])
+        # Compute flowmap loss.
+        if use_flowmap_loss:
+            loss_flowmap = self.flowmap_loss_wrapper(dummy_flowmap_batch, flows, depths, correspondence_weights, self.global_step)
+            loss_m = loss_flowmap
+            loss_dict.update({f'{prefix}_flowmap/loss': loss_flowmap.clone().detach()})
+            loss += loss_m
+
+        # Compute diffusion losses for every denoised modality.
+        if use_denoising_loss:
+            for modality in self.modalities_out.denoised_modalities:
+                name_m = modality.name
+
+                # Compute diffusion losses for modality.
+                loss_simple_m = self.get_loss(denoising_output[name_m], denoising_target[name_m], mean=False).mean([1, 2, 3])
                 loss_simple += loss_simple_m
-                loss_dict.update({f'{prefix}_{modality}/loss_simple': loss_simple_m.clone().detach().mean()})
+                loss_dict.update({f'{prefix}_{name_m}/loss_simple': loss_simple_m.clone().detach().mean()})
 
                 loss_gamma_m = loss_simple_m / torch.exp(logvar_t) + logvar_t
                 if self.learn_logvar:
-                    loss_dict.update({f'{prefix}_{modality}/loss_gamma': loss_gamma_m.mean()})
+                    loss_dict.update({f'{prefix}_{name_m}/loss_gamma': loss_gamma_m.mean()})
                 loss_gamma += loss_gamma_m
 
-                loss_vlb_m = self.get_loss(denoising_output[modality], denoising_target[modality], mean=False).mean(dim=(1, 2, 3))
-                loss_vlb_m = (self.lvlb_weights[t] * loss_vlb_m).mean()
-                loss_dict.update({f'{prefix}_{modality}/loss_vlb': loss_vlb_m})
+                loss_vlb_m = self.get_loss(denoising_output[name_m], denoising_target[name_m], mean=False).mean(dim=(1, 2, 3))
+                lvlb_weights = repeat(self.lvlb_weights[t], 'b -> b f', f=self.n_future)
+                lvlb_weights = rearrange(lvlb_weights, 'b f -> (b f)')
+                loss_vlb_m = (lvlb_weights * loss_vlb_m).mean()
+                loss_dict.update({f'{prefix}_{name_m}/loss_vlb': loss_vlb_m})
                 loss_vlb += loss_vlb_m
 
                 loss_m = self.l_simple_weight * loss_gamma_m.mean() + (self.original_elbo_weight * loss_vlb_m)
-                loss_dict.update({f'{prefix}_{modality}/loss': loss_m})
+                loss_dict.update({f'{prefix}_{name_m}/loss': loss_m})
 
                 loss += loss_m
         
-        # Log diffusion loss.
-        if use_denoising_loss:
+            # Log total diffusion losses.
             loss_dict.update({f'{prefix}/loss_simple': loss_simple.mean()})
             if self.learn_logvar:
                 loss_dict.update({f'{prefix}/loss_gamma': loss_gamma.mean()})
             loss_dict.update({f'{prefix}/loss_vlb': loss_vlb})
+
         # Log input / output layers gradients.
         if prefix == "train":
             try:
@@ -507,8 +542,6 @@ class DDPMDiffmap(DDPM):
         # model_output_depth_ctxt.register_hook(lambda grad: print("GRAD MEAN MODEL OUTPUT DEPTH_CTXT  :", grad.mean()))
         # model_output_depth_trgt.register_hook(lambda grad: print("GRAD MEAN MODEL OUTPUT DEPTH_TRGT :", grad.mean()))
 
-
-        
         loss_dict.update({f'{prefix}/loss': loss})
         # Enable not training - viz only TODO remove?
         if self.unet_trainable is not False or not torch.is_grad_enabled():
@@ -516,9 +549,15 @@ class DDPMDiffmap(DDPM):
         else:
             return None
 
-    # Prepare U-Net inputs and call U-Net.
-    def apply_model(self, x_noisy, t, cond) -> DiffusionOutput:
-
+    def apply_model(
+        self,
+        x_noisy: Float[Tensor, "sample (frame channel) height width"],
+        t: Int[Tensor, f"sample"] ,
+        cond: list[Float[Tensor, "sample channel height width"]]
+    ) -> DiffusionOutput:
+        """Prepare denoising step inputs and perform denoising step.
+        """
+        # Prepare conditioning.
         if isinstance(cond, dict):
             # hybrid case, cond is exptected to be a dict
             pass
@@ -527,8 +566,9 @@ class DDPMDiffmap(DDPM):
                 cond = [cond]
             key = 'c_concat' if self.model.conditioning_key == 'concat' else 'c_crossattn'
             cond = {key: cond}
-
-        return self.model(x_noisy, t, **cond)  #applies the U-Net, DiffusionWrapper
+        # Denoising step.
+        out = self.model(x_noisy, t, **cond)
+        return out
 
     def _predict_eps_from_xstart(self, x_t, t, pred_xstart):
         return (extract_into_tensor(self.sqrt_recip_alphas_cumprod, t, x_t.shape) * x_t - pred_xstart) / \
@@ -549,18 +589,20 @@ class DDPMDiffmap(DDPM):
         return mean_flat(kl_prior) / np.log(2.0)
 
     #estimates posterior q(x_{t-1}|x_t, x_0, c) mean and variance given x_t and conditioning c at step t
-    def p_mean_variance(self,
-                        samples: Sample,
-                        c,
-                        t: int,
-                        clip_denoised: bool,
-                        score_corrector=None,
-                        corrector_kwargs=None
-                        ) -> tuple[Float[Tensor, 'batch channel height width'],
-                                   Float[Tensor, 'batch channel height width'],
-                                   Float[Tensor, 'batch channel height width'],
-                                   Sample
-                        ]:
+    def p_mean_variance(
+        self,
+        samples: Sample,
+        c,
+        t: int,
+        clip_denoised: bool,
+        score_corrector=None,
+        corrector_kwargs=None
+    ) -> tuple[
+        Float[Tensor, 'batch channel height width'],
+        Float[Tensor, 'batch channel height width'],
+        Float[Tensor, 'batch channel height width'],
+        Sample
+    ]:
         t_in = t
         x_noisy = samples.x_noisy
 
@@ -587,16 +629,9 @@ class DDPMDiffmap(DDPM):
         samples.x_recon = x_recon
 
         # Compute and store depths and weights.
-        if model_output.clean.size(1) > 0:
-            # TODO do it cleanly by handling modalities in a secure way
-            depths = self.split_modalities(model_output.clean, ["depth_ctxt", "depth_trgt"])
-            depths = torch.cat([
-                self.to_depth(depths["depth_ctxt"]),
-                self.to_depth(depths["depth_trgt"])
-                ],
-                dim=1
-            )
-            samples.depths = depths
+        if self.modalities_out.n_clean_channels > 0:
+            depths = rearrange(model_output.clean, 'b (f c) h w -> b f c h w', c=self.channels_m)
+            samples.depths = self.to_depth(depths)
             samples.weights = model_output.weights
 
         return model_mean, posterior_variance, posterior_log_variance, samples
@@ -753,7 +788,8 @@ class DDPMDiffmap(DDPM):
 
     @torch.no_grad()
     def sample_log(self, cond, batch_size, ddim, ddim_steps, **kwargs) -> tuple[Sample, list[Float[Tensor, '...']]]:
-        if len(self.modalities_in) > 0:
+        # If diffusion model gets at least an input.
+        if self.modalities_in.n_channels > 0:
             if ddim:
                 ddim_sampler = DDIMSamplerDiffmap(self)
                 shape = (self.channels, self.image_size, self.image_size)
@@ -763,19 +799,15 @@ class DDPMDiffmap(DDPM):
             else:
                 samples, intermediates = self.sample(cond=cond, batch_size=batch_size,
                                                     return_intermediates=True, **kwargs)
+        # If no input for diffusion model - only conditioning.
         else:
             b, _, h, w = cond.size()
             dummy_x_noisy = torch.zeros((b, 0, h, w), device=self.device)
             intermediates = torch.zeros((b, 0, h, w), device=self.device)
             t = torch.randint(0, self.num_timesteps, (cond.shape[0],), device=self.device).long()
             model_output = self.apply_model(dummy_x_noisy, t, cond)
-            depths = self.split_modalities(model_output.clean, ["depth_ctxt", "depth_trgt"])
-            depths = torch.cat([
-                self.to_depth(depths["depth_ctxt"]),
-                self.to_depth(depths["depth_trgt"])
-                ],
-                dim=1
-            )
+            depths = rearrange(model_output.clean, 'b (f c) h w -> b f c h w', c=self.channels_m)
+            depths = self.to_depth(depths)
             samples = Sample(dummy_x_noisy, 0, x_recon=None, depths=depths, weights=model_output.weights)
 
         return samples, intermediates
@@ -783,10 +815,12 @@ class DDPMDiffmap(DDPM):
     @torch.no_grad()
     def sample_intermediate(
         self,
-        x_start: Float[Tensor, "batch channels=3 height width"],
+        x_start: Float[Tensor, "sample noisy_channel height width"],
         cond,
-        t) -> Float[Tensor, "batch viz=4 channels=3 height width"]:
-        '''Visualize intermediate diffusion step.'''
+        t
+    ) -> Float[Tensor, "sample viz=4 frame channel height width"]:
+        """Visualize intermediate diffusion step.
+        """
         # Intermediate input.
         t_intermediate = torch.full((x_start.shape[0],), t, device=self.device, dtype=torch.long)
         x_T_intermediate = self.q_sample(x_start=x_start, t=t_intermediate)
@@ -794,16 +828,18 @@ class DDPMDiffmap(DDPM):
 
         # Sample diffusion step.
         samples_intermediate = self.p_sample(samples_intermediate, cond, t_intermediate, clip_denoised=self.clip_denoised)
-        x_noisy_intermediate = samples_intermediate.x_noisy
-        x_recon_intermediate = samples_intermediate.x_recon
 
-        # Prepare output.
         out = dict()
-        samples_intermediate = torch.stack([x_start, x_T_intermediate, x_noisy_intermediate, x_recon_intermediate], dim=1)
-        samples_intermediate_indiv_split = [self.split_modalities(samples_intermediate[k], self.modalities_in) for k in range(samples_intermediate.size(0))]
+        tensor_vizs = [x_start, x_T_intermediate, samples_intermediate.x_noisy, samples_intermediate.x_recon]
 
-        for modality in self.modalities_in:
-            out[modality] = torch.stack([samples_intermediate_indiv_split[k][modality] for k in range(samples_intermediate.size(0))], dim=0)
+        # Split noisy modalities.
+        for k in range(len(tensor_vizs)):
+            x = rearrange(tensor_vizs[k], 'b (f c) h w -> b f c h w', c=self.channels_m)
+            tensor_vizs[k] = self.modalities_out.split_modalities_multiplicity(x, modality_names=self.modalities_out.names_denoised)
+
+        # Gather visualizations.
+        for name_m in self.modalities_out.names_denoised:
+            out[name_m] = torch.stack([tensor_vizs[k][name_m] for k in range(len(tensor_vizs))], dim=1)
 
         return out
 
@@ -834,27 +870,32 @@ class DDPMDiffmap(DDPM):
         x = 2. * (x - x.min()) / (x.max() - x.min()) - 1.
         return x
 
-    def to_depth(self, x: Float[Tensor, "batch 3 height width"]) -> Float[Tensor, "batch 1 height width"]:
-        depths = x.mean(1, keepdims=True)
+    def to_depth(self, x: Float[Tensor, "sample frame 3 height width"]) -> Float[Tensor, "sample frame height width"]:
+        depths = x.mean(2)
         return (depths / 1000).exp() + 0.01
     
     @torch.no_grad()
-    def log_images(self, batch, N=8, n_row=4, sample=True, ddim_steps=200, ddim_eta=1., inpaint=True,
-                plot_denoise_rows=False, plot_progressive_rows=True, plot_diffusion_rows=True,
-                unconditional_guidance_scale=1., unconditional_guidance_label=None, use_ema_scope=True, **kwargs):
-        '''
-        Performs diffusion forward and backward process on a given batch and returns logs for tensorboard
-        '''
+    def log_images(
+        self, batch, N=8, n_row=4, sample=True, ddim_steps=200, ddim_eta=1., inpaint=True,
+        plot_denoise_rows=False, plot_progressive_rows=True, plot_diffusion_rows=True,
+        unconditional_guidance_scale=1., unconditional_guidance_label=None, use_ema_scope=True, **kwargs
+    ) -> dict:
+        """Sample diffusion model and create visualizations for logging.
+        """
         ema_scope = self.ema_scope if use_ema_scope else nullcontext
         use_ddim = ddim_steps is not None and self.num_timesteps > 1
 
         # Prepare inputs
         log = dict()
-        x, c, xc = self.get_input(batch, self.first_stage_key,
-                                           force_c_encode=True,
-                                           return_original_cond=True,
-                                           bs=N)
-        x_split = self.split_modalities(x, self.modalities_in)
+        x, c, xc = self.get_input(
+            batch,
+            self.first_stage_key, force_c_encode=True,return_original_cond=True,
+            bs=N
+        )
+        
+        x_log = rearrange(x, 'b (f c) h w -> b f c h w', c=self.channels_m)
+        xc_log = rearrange(xc, 'b (f c) h w -> b f c h w', c=self.channels_m)
+        x_split = self.modalities_in.split_modalities_multiplicity(x_log)
 
         N = min(x.shape[0], N)
         n_row = min(x.shape[0], n_row)
@@ -872,19 +913,20 @@ class DDPMDiffmap(DDPM):
                 xc = log_txt_as_img((x.shape[2], x.shape[3]), batch["human_label"], size=x.shape[2]//25)
                 log["conditioning"][self.model.conditioning_key] = xc
             elif isimage(xc):
-                log["conditioning"][self.model.conditioning_key] = xc
+                log["conditioning"][self.model.conditioning_key] = xc_log
             if ismap(xc):
                 log["conditioning"][self.model.conditioning_key] = self.to_rgb(xc)
 
         # Log input modalities.
-        for modality in self.modalities_in:
-            log[modality] = dict()
-            log[modality]["inputs"] = x_split[modality]
+        for name_m in self.modalities_in.names:
+            log[name_m] = dict()
+            log[name_m]["inputs"] = x_split[name_m]
 
             if plot_diffusion_rows: #computes steps of forward process and logs it
+                assert False, "not implemented with n_future frames"
                 # get diffusion row
                 diffusion_row = list()
-                x_start = x[modality][:n_row]
+                x_start = x[name_m][:n_row]
                 for t in range(self.num_timesteps):
                     if t % self.log_every_t == 0 or t == self.num_timesteps - 1:
                         t = repeat(torch.tensor([t]), '1 -> b', b=n_row)
@@ -897,25 +939,28 @@ class DDPMDiffmap(DDPM):
                 diffusion_grid = rearrange(diffusion_row, 'n b c h w -> b n c h w')
                 diffusion_grid = rearrange(diffusion_grid, 'b n c h w -> (b n) c h w')
                 diffusion_grid = make_grid(diffusion_grid, nrow=diffusion_row.shape[0])
-                log[modality]["diffusion_row"] = diffusion_grid
+                log[name_m]["diffusion_row"] = diffusion_grid
 
-        if sample: #sampling of the conditional diffusion model with DDIM for accelerated inference without logging intermediates
-                # get denoise row
-                with ema_scope("Sampling"):
-                    samples, x_denoise_row = self.sample_log(cond=c,batch_size=N,ddim=use_ddim,
-                                                            ddim_steps=ddim_steps,eta=ddim_eta) #samples generative process in latent space
-                    # samples, z_denoise_row = self.sample(cond=c, batch_size=N, return_intermediates=True)
-                weights = batch["correspondence_weights"].squeeze(1) if samples.weights is None else samples.weights.squeeze(1)
-                samples_diffusion = self.split_modalities(samples.x_noisy, self.modalities_in)
-                samples_depths = self.split_modalities(samples.depths, ['depth_ctxt', 'depth_trgt'], C=1) if samples.depths is not None else {}
-                samples = dict(samples_diffusion, **samples_depths)
+        # Sample diffusion model.
+        if sample:
+            # get denoise row
+            with ema_scope("Sampling"):
+                samples, x_denoise_row = self.sample_log(cond=c,batch_size=N,ddim=use_ddim,
+                                                        ddim_steps=ddim_steps,eta=ddim_eta)
+            # Format samples.
+            weights = default(samples.weights, batch["correspondence_weights"])
+            samples_diffusion = rearrange(samples.x_noisy, 'b (f c) h w -> b f c h w', c=self.channels_m)
+            samples_diffusion = self.modalities_out.split_modalities_multiplicity(samples_diffusion, modality_names=self.modalities_out.names_denoised)
+            # TODO - properly handle modalities
+            samples_depths = self.modalities_out.split_modalities_multiplicity(samples.depths, modality_names=["depth_ctxt", "depth_trgt"])
+            samples = dict(samples_diffusion, **samples_depths)
 
-                if len(self.modalities_in) > 0:
-                    # Visualize intermediate diffusion step.
-                    t_intermediate = self.num_timesteps // 2
-                    samples_intermediate = self.sample_intermediate(x_start=x, cond=c, t=t_intermediate)
+            # Visualize intermediate diffusion step.
+            if self.modalities_out.n_noisy_channels > 0:
+                t_intermediate = self.num_timesteps // 2
+                samples_intermediate = self.sample_intermediate(x_start=x, cond=c, t=t_intermediate)
 
-        #sampling with classifier free guidance
+        # Sampling with classifier-free guidance.
         if unconditional_guidance_scale > 1.0 and self.model.conditioning_key not in ["concat", "hybrid"]:
             uc = self.get_unconditional_conditioning(N, unconditional_guidance_label)
             # uc = torch.zeros_like(c)
@@ -925,7 +970,8 @@ class DDPMDiffmap(DDPM):
                                                  unconditional_guidance_scale=unconditional_guidance_scale,
                                                  unconditional_conditioning=uc,
                                 )
-                samples_cfg = self.split_modalities(samples_cfg.x_noisy, self.modalities_in)
+                samples_cfg = rearrange(samples_cfg.x_noisy, 'b (f c) h w -> b f c h w', c=self.channels_m)
+                samples_cfg = self.modalities_out.split_modalities_multiplicity(samples_cfg, modality_names=self.modalities_out.names_denoised)
 
         if inpaint:
             # make a simple center square
@@ -951,51 +997,58 @@ class DDPMDiffmap(DDPM):
                 _, progressives = self.progressive_denoising(c,
                                                                shape=(self.channels, self.image_size, self.image_size),
                                                                batch_size=N)
-                progressives = [self.split_modalities(s, self.modalities_in) for s in progressives]
+                
+                for k in range(len(progressives)):
+                    s = rearrange(s, 'b (f c) h w -> b f c h w', c=self.channels_m)
+                    progressives[k] = self.modalities_out.split_modalities_multiplicity(s, modality_names=self.modalities_out.names_denoised)
 
-        # Log outputs.
-        for modality in self.modalities_out:
-            if modality not in log.keys():
-                log[modality] = dict()
-        
-            if sample: #sampling of the conditional diffusion model with DDIM for accelerated inference without logging intermediates
-                x_samples = samples[modality]
-                if modality in ['depth_trgt', 'depth_ctxt']:
-                    # Add correspondence weights and GT depths - TODO do properly by handling modalities.
-                    log[modality]["inputs"] = super().get_input(batch, modality)
-                    if modality == 'depth_trgt':
-                        log[modality]["correspondence_weights"] = weights
+        # Log samples.
+        for name_m in self.modalities_out.names:
+            if name_m not in log.keys():
+                log[name_m] = dict()
+
+            if sample:
+                x_samples = samples[name_m]
+                
+                # Add correspondence weights and GT depths - TODO do properly by handling modalities.
+                if name_m in ['depth_trgt', 'depth_ctxt']:
+                    depths = self.get_input_modality(batch, name_m)[:N]
+                    depths = rearrange(depths, 'b (f c) h w -> b f c h w', c=self.channels_m)
+                    log[name_m]["inputs"] = depths
+                    if name_m == 'depth_trgt':
+                        log[name_m]["correspondence_weights"] = weights
                 
                 # Log samples.
-                log[modality]["samples"] = x_samples
+                log[name_m]["samples"] = x_samples
 
                 # Add intermediates diffusion logs.
-                if len(self.modalities_in) > 0:
-                    if modality in samples_intermediate.keys():
-                        log[modality][f"intermediates_{t_intermediate}"] = samples_intermediate[modality]
+                if self.channels > 0:
+                    if name_m in samples_intermediate.keys():
+                        log[name_m][f"intermediates_{t_intermediate}"] = samples_intermediate[name_m]
                         
-                if plot_denoise_rows and len(self.modalities_in) > 0:
-                    denoise_grid = self._get_denoise_row_from_list(x_denoise_row, modality=modality) #a remplacer avec flow
-                    log[modality]["denoise_row"] = denoise_grid
+                if plot_denoise_rows and self.channels > 0:
+                    denoise_grid = self._get_denoise_row_from_list(x_denoise_row, modality=name_m) #to replace with flow
+                    log[name_m]["denoise_row"] = denoise_grid
 
-            if unconditional_guidance_scale > 1.0 and self.model.conditioning_key not in ["concat", "hybrid"]: #sampling with classifier free guidance
-                x_samples_cfg = samples_cfg[modality]
-                log[modality][f"samples_cfg_scale_{unconditional_guidance_scale:.2f}"] = x_samples_cfg
+            # Log classifier-free guidance samples.
+            if unconditional_guidance_scale > 1.0 and self.model.conditioning_key not in ["concat", "hybrid"]:
+                x_samples_cfg = samples_cfg[name_m]
+                log[name_m][f"samples_cfg_scale_{unconditional_guidance_scale:.2f}"] = x_samples_cfg
 
             if inpaint:
                 # TODO
                 raise NotImplemented("Logging inpaint sampling not implemented for DiffMap ")
                 # samples_inpaint_m = samples_inpaint[: , k*4:(k+1)*4, ...]
                 # x_samples = self.decode_first_stage(samples_inpaint_m.to(self.device))
-                # log[modality]["samples_inpainting"] = x_samples
-                # log[modality]["mask"] = mask     
+                # log[name_m]["samples_inpainting"] = x_samples
+                # log[name_m]["mask"] = mask     
                 # samples_outpaint_m =  samples_outpaint[: , k*4:(k+1)*4, ...]       
                 # x_samples = self.decode_first_stage(samples_outpaint_m.to(self.device))
-                # log[modality]["samples_outpainting"] = x_samples
+                # log[name_m]["samples_outpainting"] = x_samples
 
             if plot_progressive_rows:
-                progressives_m = [s[modality] for s in progressives]
-                prog_row = self._get_denoise_row_from_list(progressives_m, desc="Progressive Generation", modality=modality)
-                log[modality][f"progressive_row"] = prog_row
+                progressives_m = [s[name_m] for s in progressives]
+                prog_row = self._get_denoise_row_from_list(progressives_m, desc="Progressive Generation", modality=name_m)
+                log[name_m][f"progressive_row"] = prog_row
 
         return log

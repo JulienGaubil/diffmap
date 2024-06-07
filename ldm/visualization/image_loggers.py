@@ -13,7 +13,7 @@ from pytorch_lightning.utilities import rank_zero_only
 from flow_vis_torch import flow_to_color
 from einops import rearrange
 
-from ldm.misc.util import instantiate_from_config, rank_zero_print
+from ldm.misc.util import rank_zero_print
 from ldm.visualization import color_map_depth, apply_color_map_to_image, filter_depth, warp_image_flow, overlay_images
 
 
@@ -239,23 +239,30 @@ class ImageLoggerDiffmap(ImageLogger):
                  log_images_kwargs, log_all_val)
 
     @rank_zero_only
-    def _testtube(self, pl_module, images, batch_idx, split):
+    def _testtube(self, pl_module, images, batch_idx, split, nrow):
+        """Create grid visualization and log for tensorboard.
+        """
         for k in images:
-            grid = torchvision.utils.make_grid(images[k])
+            images_viz = images[k]
+            nrow_ = nrow if images_viz.size(0) // nrow > 1 else images_viz.size(0)
+            grid = torchvision.utils.make_grid(images_viz, nrow=nrow_)
             tag = f"{split}/{k}"
             pl_module.logger.experiment.add_image(
                 tag, grid,
                 global_step=pl_module.global_step)
 
     @rank_zero_only
-    def log_local(self, save_dir, split, images,
-                  global_step, current_epoch, batch_idx):
+    def log_local(self, save_dir, split, images, global_step, current_epoch, batch_idx, nrow):
+        """Prepare and save local logs.
+        """
         root = os.path.join(save_dir, "images", split)
 
         # Log every visualization for the modality.
         for key in images:
             # Create samples grid.
-            grid = torchvision.utils.make_grid(images[key], nrow=4)
+            images_viz = images[key]
+            nrow_ = nrow if images_viz.size(0) // nrow > 1 else images_viz.size(0)
+            grid = torchvision.utils.make_grid(images_viz, nrow=nrow_)
             grid = rearrange(grid, 'c h w -> h w c').squeeze(-1)
             grid = grid.numpy()
             grid = (grid * 255).astype(np.uint8)
@@ -270,11 +277,12 @@ class ImageLoggerDiffmap(ImageLogger):
             os.makedirs(os.path.split(path)[0], exist_ok=True)
             Image.fromarray(grid).save(path)
 
-    def prepare_images(self, images: Float[Tensor, "sample channel=3 height width"]) -> Float[Tensor, "sample channel=3 height width"]:
+    def prepare_images(self, images: Float[Tensor, "batch frame channel=3 height width"]) -> Float[Tensor, "(batch frame) channel=3 height width"]:
         """Subsample and copy tensors to cpu.
         """
         N = min(images.shape[0], self.max_images)
         images = images[:N].clone()
+        images = rearrange(images, 'b f ... -> (b f) ...')
         if isinstance(images, torch.Tensor):
             images = images.detach().cpu()
         return images
@@ -331,17 +339,17 @@ class ImageLoggerDiffmap(ImageLogger):
     def prepare_log_depth(
         self,
         batch: dict,
-        log_dict: dict[str, Float[Tensor, "frame channel height width"]],
+        log_dict: dict[str, Float[Tensor, "batch frame channel height width"]],
         modality: str
-    ) -> dict[str, Float[Tensor, "frame 3 height width"]]:
+    ) -> dict[str, Float[Tensor, "(batch frame) 3 height width"]]:
         logs_depth = dict()
 
         # Make figures for depth samples and inputs visualization.
         for key, visualization in log_dict.items():
             # Subsample and copy tensors.
+            if len(visualization.size()) == 5 and visualization.size(2) == 3:
+                visualization = visualization.mean(2)
             images = self.prepare_images(visualization)
-            if len(images.size()) == 4 and images.size(1) == 3:
-                images = images.mean(1, keepdims=True)
             
             # TODO - do it properly, remove correspondence weights from here
             # Apply colorization.
@@ -349,7 +357,7 @@ class ImageLoggerDiffmap(ImageLogger):
                 images = apply_color_map_to_image(images, "gray")
             else:
                 images, _ = filter_depth(images)
-                images = color_map_depth(images.squeeze(1))
+                images = color_map_depth(images)
 
             logs_depth[key] = images
         
@@ -357,32 +365,36 @@ class ImageLoggerDiffmap(ImageLogger):
 
     def prepare_log_flow(
         self,
-        log_dict: dict[str, Float[Tensor, "frame channel height width"]],
+        log_dict: dict[str, Float[Tensor, "batch frame channel height width"]],
         src_images,
         trgt_images,
         modality: str
-    ) -> dict[str, Float[Tensor, "frame 3 height width"]]:
-        
+    ) -> dict[str, Float[Tensor, "(batch frame) 3 height width"]]:
         logs_flow = dict()
         
         # Make figures for flow samples and inputs visualization.
         for key, visualization in log_dict.items():
             # Subsample and copy tensors.
+            if key.startswith('intermediates_'):
+                b, v, f, v, h, w = visualization.shape
+                visualization = rearrange(visualization, 'b v f ... -> b f v ...')
             images = self.prepare_images(visualization)
 
-            if key == "samples":
-                fwd_flows = images[:,:2,:,:]
-                src_images = (self.prepare_images(src_images) + 1.0) / 2.0
-                trgt_images = (self.prepare_images(trgt_images) + 1.0) / 2.0
-                warped_images = self.make_warped_figure(
-                    src_images=src_images,
-                    trgt_images=trgt_images,
-                    fwd_flows=fwd_flows
-                )
-                logs_flow["warped_fwd"] = warped_images
+            # if key == "samples":
+            #     fwd_flows = images[:,:2,:,:]
+            #     src_images = (self.prepare_images(src_images) + 1.0) / 2.0
+            #     trgt_images = (self.prepare_images(trgt_images) + 1.0) / 2.0
+            #     warped_images = self.make_warped_figure(
+            #         src_images=src_images,
+            #         trgt_images=trgt_images,
+            #         fwd_flows=fwd_flows
+            #     )
+            #     logs_flow["warped_fwd"] = warped_images
 
             # Apply colorization.
             if key.startswith('intermediates_'):
+                images = rearrange(images, '(b f) v c h w -> b f v c h w', f=f)
+                images = images[:,0,...]
                 images = self.make_intermediates_figure(images, modality=modality)
             else:
                 images = flow_to_color(images[:,:2,:,:]) / 255
@@ -394,14 +406,17 @@ class ImageLoggerDiffmap(ImageLogger):
     def prepare_log_rgb(
         self,
         batch: dict,
-        log_dict: dict[str, Float[Tensor, "frame 3 height width"]],
+        log_dict: dict[str, Float[Tensor, "batch frame 3 height width"]],
         modality: str
-    ) -> dict[str, Float[Tensor, "frame 3 height width"]]:
+    ) -> dict[str, Float[Tensor, "* 3 height width"]]:
         logs_rgb = dict()
 
         # Create figures for RGB samples and inputs visualization.
         for key, visualization in log_dict.items():
             # Prepare image tensors from [-1,1] to [0,1].
+            if key.startswith('intermediates_'):
+                b, v, f, v, h, w = visualization.shape
+                visualization = rearrange(visualization, 'b v f ... -> b f v ...')
             images = self.prepare_images(visualization)
 
             # Make RGB figures.
@@ -409,6 +424,8 @@ class ImageLoggerDiffmap(ImageLogger):
                 images = torch.clamp(images, -1., 1.)
             images = (images + 1.0) / 2.0 #  [-1,1] -> [0,1].
             if key.startswith('intermediates_'):
+                images = rearrange(images, '(b f) v c h w -> b f v c h w', f=f)
+                images = images[:,0,...]
                 images = self.make_intermediates_figure(images, modality=modality)
 
             logs_rgb[key] = images
@@ -447,8 +464,8 @@ class ImageLoggerDiffmap(ImageLogger):
                 elif modality == "optical_flow":
                     logs[modality] = self.prepare_log_flow(
                         log_dict=log_dict_modality,
-                        src_images=rearrange(batch[pl_module.cond_stage_key], 'n h w c -> n c h w'),
-                        trgt_images=rearrange(batch[pl_module.first_stage_key], 'n h w c -> n c h w'),
+                        src_images=rearrange(batch[pl_module.cond_stage_key], 'b f h w c -> b f c h w'),
+                        trgt_images=rearrange(batch[pl_module.first_stage_key], 'b f h w c -> b f c h w'),
                         modality=modality
                     )
                 else:
@@ -456,15 +473,20 @@ class ImageLoggerDiffmap(ImageLogger):
 
             # Log every modality.
             for modality, log_dict_modality in logs.items():
+                if pl_module.n_future > 1:
+                    nrow = pl_module.n_future 
+                else:
+                    nrow = min(self.log_images_kwargs['N'], self.max_images)
+
                 split_modality = split+f"_{modality}"
 
                 # Locally save visualizations in log folder.
                 self.log_local(pl_module.logger.save_dir, split_modality, log_dict_modality,
-                            pl_module.global_step, pl_module.current_epoch, batch_idx)
+                            pl_module.global_step, pl_module.current_epoch, batch_idx, nrow)
                 # Save visualizations for tensorboard.
                 logger_log_images = self.logger_log_images.get(logger, lambda *args, **kwargs: None)
-                logger_log_images(pl_module, log_dict_modality, pl_module.global_step, split_modality)
-
+                logger_log_images(pl_module, log_dict_modality, pl_module.global_step, split_modality, nrow)
+            
             if is_train:
                 pl_module.train()
 

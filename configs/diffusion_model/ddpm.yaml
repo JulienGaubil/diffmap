@@ -11,7 +11,6 @@ params:
   first_stage_key: "trgt" #key in batch for the noised signal
   cond_stage_key: "ctxt" #key in batch for conditioning signal
   image_size: ${image_size} # sampling resolution
-  channels: 6 #number of noisy channels as input of U-Net
   cond_stage_trainable: false   # Note: different from the one we trained before
   conditioning_key: concat #defines the type of conditioning ie (crossattn, concat, hybrid)
   monitor: null

@@ -71,7 +71,7 @@ class Modalities:
         self,
         x: Float[Tensor, "... channels height width"],
         modality_names: list[str] | str | None = None,
-        dim: int = 2
+        dim: int = 1
     ) -> dict[str, Float[Tensor, "... (multiplicity channels_m) height width"]]:
         '''Split input tensor given modalities.
         '''
@@ -114,7 +114,7 @@ class Modalities:
     def split_noisy_clean(
         self,
         x: Float[Tensor, "... channels height width"],
-        dim: int = 2
+        dim: int = 1
     ) -> tuple[Float[Tensor, "... noisy_channels height width"], Float[Tensor, "... clean_channels height width"]]:
         split_all = self.split_modalities(x, dim=dim)
         

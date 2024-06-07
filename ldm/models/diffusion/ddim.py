@@ -509,19 +509,13 @@ class DDIMSamplerDiffmap(DDIMSampler):
         x_prev = a_prev.sqrt() * pred_x0 + dir_xt + noise
 
         # Compute depths.
-        if model_output.clean.size(1) > 0:
-            # TODO handle properly
+        if self.model.modalities_out.n_clean_channels > 0:
             if self.model.model.latent:
+                assert False, "depth sampling with multiple future frames not implemented for LDM"
                 depths = self.model.decode_first_stage_all(model_output.clean, ["depth_ctxt", "depth_trgt"])
             else:
-                depths = self.model.split_modalities(model_output.clean, ["depth_ctxt", "depth_trgt"])
-
-            depths = torch.cat([
-                self.model.to_depth(depths["depth_ctxt"]),
-                self.model.to_depth(depths["depth_trgt"])
-                ],
-                dim=1
-            )
+                depths = rearrange(model_output.clean, 'b (f c) h w -> b f c h w', c=self.model.channels_m)
+            depths = self.model.to_depth(depths)
         else:
             depths = None
 

@@ -34,7 +34,6 @@ model:
   params:
     log_every_t: 200 #when logging generated samples, frequency of logging for intermediate samples  
     timesteps: 1000 #sampling timesteps in forward/backward
-    channels: 6 #number of noisy channels as input of U-Net
     n_future: ${n_future}
     conditioning_key: concat #defines the type of conditioning ie (crossattn, concat, hybrid)
     parameterization: eps
