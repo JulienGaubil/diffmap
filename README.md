@@ -31,6 +31,28 @@ E.g. for pretraining on all Rooms scenes with a shallow model:
 python main.py +experiment=[diffmap,shallow,ddpm/pretrain_rooms]
 ```
 
+
+Detailed script with useful training settings for training on 395 Rooms scenes with 5 validation scenes:
+```bash
+scenes=null
+val_scenes=['000396','000397','000398','000399','000400']
+stride=1
+flip_trajectories=False
+n_future=1
+
+gpus=[1]
+
+logdir=logs/
+name=test_run
+
+python main.py scenes=$scenes val_scenes=$val_scenes \
+experiment_cfg.logdir=$logdir experiment_cfg.name=$name lightning.trainer.gpus=$gpus \
+data.params.train.params.stride=$stride data.params.validation.params.stride=$stride \
+data.params.train.params.flip_trajectories=$flip_trajectories data.params.validation.params.flip_trajectories=$flip_trajectories \
+n_future=$n_future \
++experiment=[diffmap,shallow,ddpm/pretrain_rooms]
+```
+
 ### Datasets
 Downloading and formatting the datasets:
 - Find the preprocessed *Rooms* dataset at `/data/scene-rep/scratch/jgaubil/datasets/rooms` on Schadenfreude and the cluster.
