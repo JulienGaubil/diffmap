@@ -163,7 +163,7 @@ def run(config: DictConfig) -> None:
             logdir = Path(config.experiment_cfg.resume.rstrip("/"))
             ckpt = logdir / "checkpoints" / "last.ckpt"
         
-        trainer_kwargs['resume_from_checkpoint'] = config.model.params.ckpt_path
+        trainer_kwargs['resume_from_checkpoint'] = str(ckpt)
         _tmp = str(logdir).split("/")
         nowname = _tmp[-1]
     else:
