@@ -40,16 +40,10 @@ stride=1
 flip_trajectories=False
 n_future=1
 
-gpus=[1]
+gpus=[0]
 
-logdir=logs/
-name=test_run
-
-python main.py scenes=$scenes val_scenes=$val_scenes \
+python main.py scenes=$scenes val_scenes=$val_scenes stride=$stride flip_trajectories=$flip_trajectories n_future=$n_future \
 experiment_cfg.logdir=$logdir experiment_cfg.name=$name lightning.trainer.gpus=$gpus \
-data.params.train.params.stride=$stride data.params.validation.params.stride=$stride \
-data.params.train.params.flip_trajectories=$flip_trajectories data.params.validation.params.flip_trajectories=$flip_trajectories \
-n_future=$n_future \
 +experiment=[diffmap,shallow,ddpm/pretrain_rooms]
 ```
 
