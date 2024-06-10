@@ -1,0 +1,8 @@
+target: ldm.lr_scheduler.LambdaLinearScheduler
+base_learning_rate: 1.0e-04
+params:
+  warm_up_steps: [ 0 ] # linear warmup increase during n steps
+  cycle_lengths: [ 10000000000000 ] # incredibly large number to prevent corner cases
+  f_start: [ 1. ]
+  f_max: [ 1. ]
+  f_min: [ 1. ]

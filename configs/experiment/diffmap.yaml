@@ -15,19 +15,13 @@ val_scenes: null
 image_size: 64
 n_future: 1
 channels_m: 3
+stride: 1
+flip_trajectories: False
 
 data:
   params:
     batch_size: 16
     num_workers: 8
-    train:
-      params:
-        scenes: ${scenes}
-        val_scenes: ${val_scenes}
-    validation:
-      params:
-        scenes: ${scenes}
-        val_scenes: ${val_scenes}
     test: null
 
 model:

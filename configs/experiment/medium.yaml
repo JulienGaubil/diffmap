@@ -1,0 +1,15 @@
+# @package _global_
+
+# Defines default config.
+defaults:
+  - override /diffusion_model/scheduler@model.params.scheduler_config: constant
+
+model:
+  params:
+    unet_config:
+      params:
+        model_channels: 320 #number of intermediate layer channels across the U-Net
+        attention_resolutions: [4, 2]
+    
+    scheduler_config:
+      base_learning_rate: 1.0e-05

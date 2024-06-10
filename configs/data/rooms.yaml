@@ -2,6 +2,10 @@ target: ldm.data.datamodule.DataModuleFromConfig
 
 # Default params used.
 image_size: 512
+scenes: '000001'
+val_scenes: null
+stride: 1
+flip_trajectories: False
 n_future: 1
 
 params:
@@ -16,11 +20,11 @@ params:
     params:
     # Merge dataset_params with new params fields
       root_dir: datasets/rooms
-      scenes: null
-      val_scenes: null
-      stride: 1
+      scenes: ${scenes}
+      val_scenes: ${val_scenes}
+      stride: ${stride}
       n_future: ${n_future}
-      flip_trajectories: false
+      flip_trajectories: ${flip_trajectories}
       image_transforms:
       - target: torchvision.transforms.Resize
         params:
@@ -36,11 +40,11 @@ params:
     params: 
     # Merge dataset_params with new params fields
       root_dir: datasets/rooms
-      scenes: null
-      val_scenes: null
-      stride: 1
+      scenes: ${scenes}
+      val_scenes: ${val_scenes}
+      stride: ${stride}
       n_future: ${n_future}
-      flip_trajectories: false
+      flip_trajectories: ${flip_trajectories}
       image_transforms:
       - target: torchvision.transforms.Resize
         params:
