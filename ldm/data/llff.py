@@ -78,29 +78,29 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
             else:
                 raise Exception(f'Stride {self.stride} not valid, should be 1 or 3.')
             
-            assert len(paths_flow_fwd) == len(paths_flow_bwd) and len(paths_flow_bwd) == len(paths_frames) - 1
-            
             # Define dataset pairs.
             self.frame_pair_paths += [
-                (Path(paths_frames[idx]), [Path(p) for p in paths_frames[idx + 1 : idx + self.n_future + 1]])
-                for idx in range(len(paths_frames) - self.n_future)
+                (Path(paths_frames[idx]), [Path(p) for p in paths_frames[idx + self.stride : idx + self.n_future * self.stride + 1 : self.stride]])
+                for idx in range(len(paths_frames) - (self.n_future + self.stride) + 1)
             ]
             self.flow_fwd_paths += [
-                [Path(p) for p in paths_flow_fwd[idx : idx + self.n_future]]
-                for idx in range(len(paths_frames) - self.n_future)
+                [Path(p) for p in paths_flow_fwd[idx : idx + self.n_future * self.stride : stride]]
+                for idx in range(len(paths_frames) - (self.n_future + self.stride) + 1)
             ]
             self.flow_bwd_paths += [
-                [Path(p) for p in paths_flow_bwd[idx : idx + self.n_future]]
-                for idx in range(len(paths_frames) - self.n_future)
+                [Path(p) for p in paths_flow_bwd[idx : idx + self.n_future * self.stride : stride]]
+                for idx in range(len(paths_frames) - (self.n_future + self.stride) + 1)
             ]
             self.flow_fwd_mask_paths += [
-                [Path(p) for p in paths_flow_fwd_mask[idx : idx + self.n_future]]
-                for idx in range(len(paths_frames) - self.n_future)
+                [Path(p) for p in paths_flow_fwd_mask[idx : idx + self.n_future * self.stride : stride]]
+                for idx in range(len(paths_frames) - (self.n_future + self.stride) + 1)
             ]
             self.flow_bwd_mask_paths += [
-                [Path(p) for p in paths_flow_bwd_mask[idx : idx + self.n_future]]
-                for idx in range(len(paths_frames) - self.n_future)
+                [Path(p) for p in paths_flow_bwd_mask[idx : idx + self.n_future * self.stride : stride]]
+                for idx in range(len(paths_frames) - (self.n_future + self.stride) + 1)
             ]
+
+            assert len(self.frame_pair_paths) == len(self.flow_fwd_paths) == len(self.flow_bwd_paths) == len(self.flow_fwd_mask_paths) == len(self.flow_bwd_mask_paths)
 
         # # Loads depths - TODO do this properly
         # self.tform_depth, self.correspondence_weights_transforms = self.initialize_depth_tform()

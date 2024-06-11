@@ -27,11 +27,10 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
         for k in range(len(self.scenes)):
             scene = self.scenes[k]
 
-            # Prepare depths paths.
-            depth_paths = sorted((self.root_dir / scene / "depth_exr").iterdir())[::self.stride]
+            depth_paths = sorted((self.root_dir / scene / "depth_exr").iterdir())
             self.depth_pairs_paths += [
-                (Path(depth_paths[idx]), [Path(p) for p in depth_paths[idx + 1 : idx + self.n_future + 1]])
-                for idx in range(len(depth_paths) - self.n_future)
+                (Path(depth_paths[idx]), [Path(p) for p in depth_paths[idx + self.stride : idx + self.n_future * self.stride + 1 : self.stride]])
+                for idx in range(len(depth_paths) - (self.n_future + self.stride) + 1)
             ]
 
             # Prepare intrinsics.
@@ -45,17 +44,18 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
             # Prepare extrinsics.
             extrinsics_file = self.root_dir / scene / "poses.txt"
             c2ws = np.loadtxt(extrinsics_file)
-            c2ws = torch.from_numpy(c2ws.reshape((-1,4,4)))[::self.stride]
-            assert c2ws.shape[0] == len(depth_paths)
+            c2ws = torch.from_numpy(c2ws.reshape((-1,4,4)))
             w2cs = torch.linalg.inv(c2ws)
             extrinsics = [Extrinsics(R=w2cs[i,:3,:3], t=w2cs[i,:3,3]) for i in range(w2cs.size(0))]
 
             # Load camera pairs.
             cameras = [Camera(intrinsics=intrinsics, extrinsics=extrinsics[i]) for i in range(len(extrinsics))]
             self.cameras_pairs += [
-                (cameras[idx], [cam for cam in cameras[idx + 1  : idx + self.n_future + 1]])
-                for idx in range(len(cameras) - self.n_future)
+                (cameras[idx], [cam for cam in cameras[idx + self.stride  : idx + self.n_future * self.stride + 1 : self.stride]])
+                for idx in range(len(cameras) - (self.n_future + self.stride) + 1)
             ]
+
+        assert len(self.depth_pairs_paths) == len(self.frame_pair_paths) == len(self.cameras_pairs)
         
         # Create transforms.
         self.tform_depth, self.tform_correspondence_weights = self.initialize_depth_tform()

@@ -47,34 +47,33 @@ def dump_rooms(
     os.makedirs(flow_bwd_path, exist_ok=True)
     os.makedirs(img_path, exist_ok=True)
 
-    assert frames.size(0) - 1 == fwd_flows.size(0) == bwd_flows.size(0) == masks_flow_fwd.size(0) == masks_flow_bwd.size(0)
+    assert frames.size(0) - stride  == fwd_flows.size(0) == bwd_flows.size(0) == masks_flow_fwd.size(0) == masks_flow_bwd.size(0)
 
-    for i in tqdm(range(fwd_flows.size(0)), desc="dumping files"):
-        # Clone slices (else saves the whole tensor, see: https://discuss.pytorch.org/t/saving-tensor-with-torch-save-uses-too-much-memory/46865/3)
-        fwd_flow = fwd_flows[i].clone()
-        bwd_flow = bwd_flows[i].clone()
-        mask_flow_fwd = masks_flow_fwd[i].clone()
-        mask_flow_bwd = masks_flow_bwd[i].clone()
-        curr_frame = frames[i].clone()
-        next_frame = frames[i+1].clone()
+    for i in tqdm(range(frames.size(0)), desc="dumping files"):
+
+        if i < frames.size(0) - stride:
+            # Clone slices (else saves the whole tensor, see: https://discuss.pytorch.org/t/saving-tensor-with-torch-save-uses-too-much-memory/46865/3)
+            fwd_flow = fwd_flows[i].clone()
+            bwd_flow = bwd_flows[i].clone()
+            mask_flow_fwd = masks_flow_fwd[i].clone()
+            mask_flow_bwd = masks_flow_bwd[i].clone()
+            curr_frame = frames[i].clone()
+            next_frame = frames[i + stride].clone()
+            
+            # Save flow, RGB flow viz and frames.
+            torch.save(fwd_flow, flow_fwd_path / Path(f'flow_fwd_%06d_%06d.pt'%(i,i+stride)) )
+            torch.save(bwd_flow, flow_bwd_path / Path(f'flow_bwd_%06d_%06d.pt'%(i,i+stride)) )
+            torch.save(mask_flow_fwd, flow_fwd_path / Path(f'mask_flow_fwd_%06d_%06d.pt'%(i,i+stride)) )
+            torch.save(mask_flow_bwd, flow_bwd_path / Path(f'mask_flow_bwd_%06d_%06d.pt'%(i,i+stride)) )
+
+            fwd_flow_viz = rearrange(fwd_flow, "h w xy -> xy h w")
+            bwd_flow_viz = rearrange(bwd_flow, "h w xy -> xy h w")
+            fwd_flow_viz = flow_to_color(fwd_flow_viz) / 255
+            bwd_flow_viz = flow_to_color(bwd_flow_viz) / 255
+            # save_image(fwd_flow_viz, flow_fwd_path / Path(f'flow_fwd_%06d_%06d.png'%(i,i + stride)) )
+            # save_image(bwd_flow_viz, flow_bwd_path / Path(f'flow_bwd_%06d_%06d.png'%(i,i + stride)) )
         
-        # Save flow, RGB flow viz and frames.
-        torch.save(fwd_flow, flow_fwd_path / Path(f'flow_fwd_%06d_%06d.pt'%(i,i+1)) )
-        torch.save(bwd_flow, flow_bwd_path / Path(f'flow_bwd_%06d_%06d.pt'%(i,i+1)) )
-        torch.save(mask_flow_fwd, flow_fwd_path / Path(f'mask_flow_fwd_%06d_%06d.pt'%(i,i+1)) )
-        torch.save(mask_flow_bwd, flow_bwd_path / Path(f'mask_flow_bwd_%06d_%06d.pt'%(i,i+1)) )
-
-        fwd_flow_viz = rearrange(fwd_flow, "h w xy -> xy h w")
-        bwd_flow_viz = rearrange(bwd_flow, "h w xy -> xy h w")
-        fwd_flow_viz = flow_to_color(fwd_flow_viz) / 255
-        bwd_flow_viz = flow_to_color(bwd_flow_viz) / 255
-        # save_image(fwd_flow_viz, flow_fwd_path / Path(f'flow_fwd_%06d_%06d.png'%(i,i+1)) )
-        # save_image(bwd_flow_viz, flow_bwd_path / Path(f'flow_bwd_%06d_%06d.png'%(i+1,i)) )
         save_image(curr_frame, img_path / Path(f"frame%06d.png"%i) )
-
-        # Save last frame.
-        if i == fwd_flows.size(0) - 1:
-            save_image(next_frame, img_path / Path(f"frame%06d.png"%(i+1)) )
 
 def preprocess_flow_projection(
     scene_path: Path,
@@ -92,12 +91,10 @@ def preprocess_flow_projection(
     # Get depth paths.
     depth_file_folder_path = scene_path / "depth_exr"
     depth_files = [Path(p) for p in sorted(glob.glob(os.path.join(depth_file_folder_path, f"*.exr")))]
-    # depth_files = depth_files[::stride]
 
     # Get rgb paths.
     rgb_file_folder_path = Path(scene_path / "rgb")
     rgb_files = [Path(p) for p in sorted(glob.glob(os.path.join(rgb_file_folder_path, "*.png")))]
-    # rgb_files = rgb_files[::stride]
 
     # Load intrinsics.
     intrinsics_file = scene_path / "intrinsics.txt"
@@ -131,7 +128,6 @@ def preprocess_flow_projection(
     c2ws = np.loadtxt(extrinsics_file)
     c2ws = torch.from_numpy(c2ws.reshape((-1,4,4)))
     w2cs = torch.linalg.inv(c2ws)
-    # w2cs = w2cs[::stride]
 
     # Create cameras.
     cameras = [
@@ -145,59 +141,59 @@ def preprocess_flow_projection(
     fwd_flows, bwd_flows = list(), list()
     fwd_masks, bwd_masks = list(), list()
     frames = list()
-    for idx in tqdm(range(0, len(depth_files) - 1, stride)):
+    for idx in tqdm(range(0, len(depth_files))):
 
-        prev_camera = cameras[idx]
-        curr_camera = cameras[idx + stride]
+        if idx < len(depth_files) - stride:
 
-        # Load and resize depth maps.
-        depth_pixels_prev = load_exr(depth_files[idx])
-        depth_pixels_curr = load_exr(depth_files[idx + stride])
-        depth_pixels_prev = transforms.functional.resize(
-            depth_pixels_prev, 
-            [H_trgt, W_trgt],
-            interpolation=transforms.InterpolationMode.NEAREST
-        ).type(torch.float) #(3, H, W), [0, 255]
-        depth_pixels_curr = transforms.functional.resize(
-            depth_pixels_curr, 
-            [H_trgt, W_trgt],
-            interpolation=transforms.InterpolationMode.NEAREST
-        ).type(torch.float) #(3, H, W), [0, 255]
+            prev_camera = cameras[idx]
+            curr_camera = cameras[idx + stride]
 
-        # Load and resize RGB frames.
-        src_image = np.asarray(Image.open(rgb_files[idx]).convert("RGB")) #(H, W, 3), [0, 255]
-        trgt_image = np.asarray(Image.open(rgb_files[idx+1]).convert("RGB")) #(H, W, 3), [0, 255]
-        src_image = rearrange(torch.from_numpy(src_image.copy()), 'h w c -> c h w')
-        trgt_image = rearrange(torch.from_numpy(trgt_image.copy()), 'h w c -> c h w')
-        src_image = torchvision.transforms.functional.resize(src_image, [H_trgt, W_trgt], interpolation=transforms.InterpolationMode.BILINEAR).type(torch.float) #(3, H, W), [0, 255]
-        trgt_image = torchvision.transforms.functional.resize(trgt_image, [H_trgt, W_trgt], interpolation=transforms.InterpolationMode.BILINEAR).type(torch.float) #(3, H, W), [0, 255]
-        src_image = src_image / 255
-        trgt_image = trgt_image / 255
-        
-        # Compute flows.
-        fwd_flow = compute_flow_projection(
-            src_depth_map=depth_pixels_prev,
-            src_camera=prev_camera,
-            trgt_camera=curr_camera
-        )
-        bwd_flow = compute_flow_projection(
-            src_depth_map=depth_pixels_curr,
-            src_camera=curr_camera,
-            trgt_camera=prev_camera,
-        )
+            # Load and resize depth maps.
+            depth_pixels_prev = load_exr(depth_files[idx])
+            depth_pixels_curr = load_exr(depth_files[idx + stride])
+            depth_pixels_prev = transforms.functional.resize(
+                depth_pixels_prev, 
+                [H_trgt, W_trgt],
+                interpolation=transforms.InterpolationMode.NEAREST
+            ).type(torch.float) #(3, H, W), [0, 255]
+            depth_pixels_curr = transforms.functional.resize(
+                depth_pixels_curr, 
+                [H_trgt, W_trgt],
+                interpolation=transforms.InterpolationMode.NEAREST
+            ).type(torch.float) #(3, H, W), [0, 255]
 
-        # Compute consistency masks.
-        fwd_mask = compute_consistency_mask(src_image, trgt_image, fwd_flow)
-        bwd_mask = compute_consistency_mask(trgt_image, src_image, bwd_flow)
+            # Load and resize RGB frames.
+            src_image = np.asarray(Image.open(rgb_files[idx]).convert("RGB")) #(H, W, 3), [0, 255]
+            trgt_image = np.asarray(Image.open(rgb_files[idx + stride]).convert("RGB")) #(H, W, 3), [0, 255]
+            src_image = rearrange(torch.from_numpy(src_image.copy()), 'h w c -> c h w')
+            trgt_image = rearrange(torch.from_numpy(trgt_image.copy()), 'h w c -> c h w')
+            src_image = torchvision.transforms.functional.resize(src_image, [H_trgt, W_trgt], interpolation=transforms.InterpolationMode.BILINEAR).type(torch.float) #(3, H, W), [0, 255]
+            trgt_image = torchvision.transforms.functional.resize(trgt_image, [H_trgt, W_trgt], interpolation=transforms.InterpolationMode.BILINEAR).type(torch.float) #(3, H, W), [0, 255]
+            src_image = src_image / 255
+            trgt_image = trgt_image / 255
+            
+            # Compute flows.
+            fwd_flow = compute_flow_projection(
+                src_depth_map=depth_pixels_prev,
+                src_camera=prev_camera,
+                trgt_camera=curr_camera
+            )
+            bwd_flow = compute_flow_projection(
+                src_depth_map=depth_pixels_curr,
+                src_camera=curr_camera,
+                trgt_camera=prev_camera,
+            )
 
-        fwd_flows.append(fwd_flow)
-        bwd_flows.append(bwd_flow)
-        fwd_masks.append(fwd_mask)
-        bwd_masks.append(bwd_mask)
+            # Compute consistency masks.
+            fwd_mask = compute_consistency_mask(src_image, trgt_image, fwd_flow)
+            bwd_mask = compute_consistency_mask(trgt_image, src_image, bwd_flow)
+
+            fwd_flows.append(fwd_flow)
+            bwd_flows.append(bwd_flow)
+            fwd_masks.append(fwd_mask)
+            bwd_masks.append(bwd_mask)
+
         frames.append(src_image)
-
-    
-    frames.append(trgt_image)
 
     # Concatenate everything
     frames = torch.stack(frames, dim=0) # (frame, 3, h, w)
