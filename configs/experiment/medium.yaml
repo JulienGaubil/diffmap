@@ -2,7 +2,7 @@
 
 # Defines default config.
 defaults:
-  - override /diffusion_model/scheduler@model.params.scheduler_config: constant
+  - override /diffusion_model/scheduler@model.params.scheduler_config: linear_increase_decrease
 
 model:
   params:
@@ -10,6 +10,7 @@ model:
       params:
         model_channels: 320 #number of intermediate layer channels across the U-Net
         attention_resolutions: [4, 2]
-    
-    scheduler_config:
-      base_learning_rate: 1.0e-05
+
+data:
+  params:
+    batch_size: 32
