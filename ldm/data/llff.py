@@ -81,23 +81,23 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
             # Define dataset pairs.
             self.frame_pair_paths += [
                 (Path(paths_frames[idx]), [Path(p) for p in paths_frames[idx + self.stride : idx + self.n_future * self.stride + 1 : self.stride]])
-                for idx in range(len(paths_frames) - (self.n_future + self.stride) + 1)
+                for idx in range(len(paths_frames) - (self.n_future * self.stride))
             ]
             self.flow_fwd_paths += [
                 [Path(p) for p in paths_flow_fwd[idx : idx + self.n_future * self.stride : stride]]
-                for idx in range(len(paths_frames) - (self.n_future + self.stride) + 1)
+                for idx in range(len(paths_frames) - (self.n_future * self.stride))
             ]
             self.flow_bwd_paths += [
                 [Path(p) for p in paths_flow_bwd[idx : idx + self.n_future * self.stride : stride]]
-                for idx in range(len(paths_frames) - (self.n_future + self.stride) + 1)
+                for idx in range(len(paths_frames) - (self.n_future * self.stride))
             ]
             self.flow_fwd_mask_paths += [
                 [Path(p) for p in paths_flow_fwd_mask[idx : idx + self.n_future * self.stride : stride]]
-                for idx in range(len(paths_frames) - (self.n_future + self.stride) + 1)
+                for idx in range(len(paths_frames) - (self.n_future * self.stride))
             ]
             self.flow_bwd_mask_paths += [
                 [Path(p) for p in paths_flow_bwd_mask[idx : idx + self.n_future * self.stride : stride]]
-                for idx in range(len(paths_frames) - (self.n_future + self.stride) + 1)
+                for idx in range(len(paths_frames) - (self.n_future * self.stride))
             ]
 
             assert len(self.frame_pair_paths) == len(self.flow_fwd_paths) == len(self.flow_bwd_paths) == len(self.flow_fwd_mask_paths) == len(self.flow_bwd_mask_paths)

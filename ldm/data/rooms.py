@@ -28,9 +28,10 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
             scene = self.scenes[k]
 
             depth_paths = sorted((self.root_dir / scene / "depth_exr").iterdir())
+
             self.depth_pairs_paths += [
                 (Path(depth_paths[idx]), [Path(p) for p in depth_paths[idx + self.stride : idx + self.n_future * self.stride + 1 : self.stride]])
-                for idx in range(len(depth_paths) - (self.n_future + self.stride) + 1)
+                for idx in range(len(depth_paths) - (self.n_future * self.stride))
             ]
 
             # Prepare intrinsics.
@@ -52,7 +53,7 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
             cameras = [Camera(intrinsics=intrinsics, extrinsics=extrinsics[i]) for i in range(len(extrinsics))]
             self.cameras_pairs += [
                 (cameras[idx], [cam for cam in cameras[idx + self.stride  : idx + self.n_future * self.stride + 1 : self.stride]])
-                for idx in range(len(cameras) - (self.n_future + self.stride) + 1)
+                for idx in range(len(cameras) - (self.n_future * self.stride))
             ]
 
         assert len(self.depth_pairs_paths) == len(self.frame_pair_paths) == len(self.cameras_pairs)
