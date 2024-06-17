@@ -80,7 +80,7 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
             
             # Define dataset pairs.
             self.frame_pair_paths += [
-                (Path(paths_frames[idx]), [Path(p) for p in paths_frames[idx + self.stride : idx + self.n_future * self.stride + 1 : self.stride]])
+                ([Path(paths_frames[idx])], [Path(p) for p in paths_frames[idx + self.stride : idx + self.n_future * self.stride + 1 : self.stride]])
                 for idx in range(len(paths_frames) - (self.n_future * self.stride))
             ]
             self.flow_fwd_paths += [

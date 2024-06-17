@@ -39,6 +39,11 @@ from ldm.visualization import filter_depth
 from ldm.modules.flowmap.flow.flow_predictor import Flows
 from ldm.misc.projection import compute_flow_projection, compute_consistency_mask
 
+# Enable arithmetic operations in .yaml file with keywords "divide" or "multiply" or "linear".
+OmegaConf.register_new_resolver("divide", (lambda x, y: x//y), replace=True)
+OmegaConf.register_new_resolver("multiply", (lambda x, y: x*y), replace=True)
+OmegaConf.register_new_resolver("linear", (lambda a, b, c: a * b + c), replace=True)
+
 MULTINODE_HACKS = False
 
 @rank_zero_only
@@ -62,7 +67,7 @@ def print_tensor_dict(dictionnary: dict, root: bool = True) -> dict:
         elif isinstance(v,list):
             if all([isinstance(s, (Tensor, np.ndarray)) for s in v]):
                 tmp_dict[k] = [s.shape for s in v]
-            elif all([isinstance(s, Camera) for s in v]):
+            else:
                 tmp_dict[k] = len(v)
 
     if root:
@@ -104,29 +109,29 @@ def process_value(value: Any, keys: list[str]) -> Any:
             # (b h w c)
             value = torch.clamp(value, -1., 1.)
             value = (value + 1.0) / 2.0
-            if value.size(1) == 3:
-                value = rearrange(value, 'b c h w -> b h w c')
+            if value.size(2) == 3:
+                value = rearrange(value, 'b f c h w -> b f h w c')
         elif 'depths' in keys:
             # (b h w)
-            if len(value.shape) == 4:
+            if len(value.shape) == 5:
                 if value.size(-1) == 3:
                     value = value.mean(-1)
-                elif value.size(1) == 3:
-                    value = value.mean(1)
+                elif value.size(2) == 3:
+                    value = value.mean(2)
                 else:
                     value = value.squeeze()
                     if len(value.shape) == 2:
                         value = value.unsqueeze(0)
-            print(0.1, keys, value.shape)
         
         elif 'flows' in keys:
             if 'forward' in keys or 'backward' in keys:
                 # (b h w xy=2)
                 if value.size(-1) == 3:
                     value = value[...,:2]
-                elif value.size(1) == 3:
-                    value = value[:,:2]
-                    value = rearrange(value, 'b xy h w -> b h w xy')
+                elif value.size(2) == 3:
+                    value = value[:,:,:2]
+                    value = rearrange(value, 'b f xy h w -> b f h w xy')
+                # TODO - remove hack
                 value = value * 0.0213
         return value
     return None
@@ -254,11 +259,8 @@ def default_log(logs_dict: dict, modality: str, batch_logs: dict) -> None:
 
     for keys_logs_dict, keys_batch_logs in zip(log_dict_keys_list, batch_logs_keys_list):
         value = get_value(batch_logs, keys_batch_logs)
-        if 'depths' in keys_logs_dict:
-            print(0.02, value.shape)
         value = process_value(value, keys_logs_dict)
         default_add(dictionnary=logs_dict, keys=keys_logs_dict, value=value)
-
 
 def prepare_batch(logs_dict: dict, batch: dict, dataset) -> dict:
     batch_for_model = dict()
@@ -476,6 +478,8 @@ def sample(config: DictConfig) -> None:
 
 
     ################## jg: end main trunk, start sampling specifics ####################
+    log_image_kwargs = config.lightning.callbacks.image_logger.params.log_images_kwargs
+
     # TODO - remove trainer config
     assert len(config.lightning.trainer.gpus) == 1, f"Sample on a single GPU, {len(config.lightning.trainer.gpus)} are provided"
     gpu = config.lightning.trainer.gpus[0]
@@ -507,43 +511,45 @@ def sample(config: DictConfig) -> None:
 
     # Sampling loop.
     for i, batch in tqdm(enumerate(dataloader_val)):
+
+        if i < 2:
         
-        print(f'Frame indices val batch {i} : ', batch['indices'])
+            print(f'Frame indices val batch {i} : ', batch['indices'])
 
-        # Prepare input batch.
-        if i > 0 and config.experiment_cfg.autoregressive:
-            batch_for_model = prepare_batch(logs, batch, dataset_val)
-        else:
-            batch_for_model = batch
+            # Prepare input batch.
+            if i > 0 and config.experiment_cfg.autoregressive:
+                batch_for_model = prepare_batch(logs, batch, dataset_val)
+            else:
+                batch_for_model = batch
 
-        # Sample model.
-        log_image_kwargs = config.lightning.callbacks.image_logger.params.log_images_kwargs
-        batch_logs = model.log_images(
-            batch_for_model,
-            **log_image_kwargs
-        )
+            # Sample model.
+            batch_logs = model.log_images(
+                batch_for_model,
+                **log_image_kwargs
+            )
 
-        # Get flowmap inputs.
-        if 'depth_ctxt' in batch_logs and 'depth_trgt' in batch_logs:
-            x, c, flows_input, _  = model.get_input(batch, model.first_stage_key, return_flows_depths=True)
+            # Get flowmap inputs.
+            if 'depth_ctxt' in batch_logs and 'depth_trgt' in batch_logs:
+                x, c, flows_input, _  = model.get_input(batch, model.first_stage_key, return_flows_depths=True)
 
-            bs, H, W = batch_logs['depth_ctxt']['samples'].squeeze(1).size()
+                H, W = batch_logs['depth_ctxt']['samples'].shape[:-2]
 
-            # Add gt and sampled depth.
-            default_log(logs_dict=logs, modality='depths', batch_logs=batch_logs)
-            
-            # Add gt flow.
-            default_add(logs, ['gt','flows','backward'], flows_input.backward.squeeze(1).cpu() * 0.0213) # (frame h w xy=2)
-            default_add(logs, ['gt','flows','forward_mask'], flows_input.forward_mask.squeeze(1).cpu()) # (frame h w)
-            default_add(logs, ['gt','flows','backward_mask'], flows_input.backward_mask.squeeze(1).cpu())
+                # Add gt and sampled depth.
+                default_log(logs_dict=logs, modality='depths', batch_logs=batch_logs)
+                
+                # Add gt flow.
+                # TODO - remove hack flow
+                default_add(logs, ['gt','flows','backward'], flows_input.backward.squeeze(1).cpu() * 0.0213) # (frame h w xy=2)
+                default_add(logs, ['gt','flows','forward_mask'], flows_input.forward_mask.squeeze(1).cpu()) # (frame h w)
+                default_add(logs, ['gt','flows','backward_mask'], flows_input.backward_mask.squeeze(1).cpu())
 
-            # Add gt camera intrinsics.
-            default_add(logs,['gt','ctxt','cameras'], batch['camera_ctxt'], operation="extend")
-            default_add(logs,['gt','trgt','cameras'], batch['camera_trgt'], operation="extend")
+                # Add gt camera intrinsics.
+                default_add(logs,['gt','ctxt','cameras'], batch['camera_ctxt'], operation="extend")
+                default_add(logs,['gt','trgt','cameras'], batch['camera_trgt'], operation="extend")
 
-        # Add gt and sampled flows and rgbs.
-        default_log(logs_dict=logs, modality='rgbs', batch_logs=batch_logs)
-        default_log(logs_dict=logs, modality='flows', batch_logs=batch_logs)
+            # Add gt and sampled flows and rgbs.
+            default_log(logs_dict=logs, modality='rgbs', batch_logs=batch_logs)
+            default_log(logs_dict=logs, modality='flows', batch_logs=batch_logs)
             
 
     # print_tensor_dict(logs)
@@ -554,11 +560,18 @@ def sample(config: DictConfig) -> None:
         for keys in log_dict_keys_list:
             value = get_value(logs, keys)
             if value is not None:
-                print(keys, type(value))
-                value = torch.cat(value, dim=0)
+                print(0.0, type(value), len(value), type(value[0]), value[0].shape)
+                value = torch.cat([v.squeeze() for v in value], dim=0) # TODO - remove hack
+                print(0.1, value.shape)
                 default_set(dictionnary=logs, keys=keys, value=value)
                 print(keys, get_value(logs, keys).shape)
                 print('')
+
+    print(0.2,  len(get_value(logs, ['gt','ctxt','cameras'])), len(get_value(logs, ['gt','ctxt','cameras'])[0]) )
+    print(0.3,  len(get_value(logs, ['gt','trgt','cameras'])) , len(get_value(logs, ['gt','trgt','cameras'])[0]) )
+    # TODO - remove hack
+    default_set(logs, ['gt','ctxt','cameras'], [cam[0] for cam in get_value(logs, ['gt','ctxt','cameras']) ])
+    default_set(logs, ['gt','trgt','cameras'], [cam[0] for cam in get_value(logs, ['gt','trgt','cameras']) ])
 
     # Run flowmap for 3D projection.
     if config.experiment_cfg.save_points:

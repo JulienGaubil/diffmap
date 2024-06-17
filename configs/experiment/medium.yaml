@@ -10,7 +10,3 @@ model:
       params:
         model_channels: 320 #number of intermediate layer channels across the U-Net
         attention_resolutions: [4, 2]
-
-data:
-  params:
-    batch_size: 32

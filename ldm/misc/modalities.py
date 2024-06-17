@@ -91,10 +91,10 @@ class Modalities:
     
     def split_modalities_multiplicity(
         self,
-        x: Float[Tensor, "... multiplicity channel height width"],
+        x: Float[Tensor, "... _ channel height width"],
         modality_names: list[str] | str | None = None,
         dim: int = 1
-    ) -> dict[str, Float[Tensor, "... (multiplicity channels_m) height width"]]:
+    ) -> dict[str, Float[Tensor, "... multiplicity channels_m height width"]]:
         '''Split input tensor along multiplicity dim given modalities.
         '''
         if isinstance(modality_names, str):

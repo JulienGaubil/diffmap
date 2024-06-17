@@ -30,7 +30,7 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
             depth_paths = sorted((self.root_dir / scene / "depth_exr").iterdir())
 
             self.depth_pairs_paths += [
-                (Path(depth_paths[idx]), [Path(p) for p in depth_paths[idx + self.stride : idx + self.n_future * self.stride + 1 : self.stride]])
+                ([Path(depth_paths[idx])], [Path(p) for p in depth_paths[idx + self.stride : idx + self.n_future * self.stride + 1 : self.stride]])
                 for idx in range(len(depth_paths) - (self.n_future * self.stride))
             ]
 
@@ -52,7 +52,7 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
             # Load camera pairs.
             cameras = [Camera(intrinsics=intrinsics, extrinsics=extrinsics[i]) for i in range(len(extrinsics))]
             self.cameras_pairs += [
-                (cameras[idx], [cam for cam in cameras[idx + self.stride  : idx + self.n_future * self.stride + 1 : self.stride]])
+                ([cameras[idx]], [cam for cam in cameras[idx + self.stride  : idx + self.n_future * self.stride + 1 : self.stride]])
                 for idx in range(len(cameras) - (self.n_future * self.stride))
             ]
 
@@ -101,11 +101,12 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
         depth_raw = load_exr(path) # (H, W)
         return self.tform_depth(depth_raw)
     
-    def _get_camera_pair(self, index: int) -> tuple[Camera, Camera]:
+    def _get_camera_pair(self, index: int) -> tuple[list[Camera]]:
         prev_camera, future_cameras = self.cameras_pairs[index]
 
         # Apply intrinsics transformations.
-        prev_camera.intrinsics = self.tform_intrinsics(prev_camera.intrinsics)
+        for k in range(len(prev_camera)):
+            prev_camera[k].intrinsics = self.tform_intrinsics(prev_camera[k].intrinsics)
         for k in range(self.n_future):
             future_cameras[k].intrinsics = self.tform_intrinsics(future_cameras[k].intrinsics)
 
@@ -125,13 +126,13 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
 
         # Define paths and indices.
         if pair_idx[0] == 0:
-            prev_im_path, future_im_paths = self.frame_pair_paths[index]
-            prev_depth_path, future_depth_paths = self.depth_pairs_paths[index]
+            prev_im_paths, future_im_paths = self.frame_pair_paths[index]
+            prev_depth_paths, future_depth_paths = self.depth_pairs_paths[index]
             fwd_flow_paths = self.flow_fwd_paths[index]
             bwd_flow_paths = self.flow_bwd_paths[index]
             fwd_flow_mask_paths = self.flow_fwd_mask_paths[index]
             bwd_flow_mask_paths = self.flow_bwd_mask_paths[index]
-            prev_camera, future_cameras = self._get_camera_pair(index)
+            prev_cameras, future_cameras = self._get_camera_pair(index)
             indices = torch.arange(index, index + (self.stride * self.n_future) + 1, self.stride)
         else:
             # Flipping trajectory
@@ -141,23 +142,23 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
             bwd_flow_mask_paths = self.flow_fwd_mask_paths[index][::-1]
 
             # Invert order for future frames.
-            prev_camera, next_cameras = self._get_camera_pair(index)
-            prev_im_path, next_im_paths = self.frame_pair_paths[index]
-            prev_depth_path, next_depth_paths = self.depth_pairs_paths[index]
+            prev_cameras, next_cameras = self._get_camera_pair(index)
+            prev_im_paths, next_im_paths = self.frame_pair_paths[index]
+            prev_depth_paths, next_depth_paths = self.depth_pairs_paths[index]
 
-            future_cameras = next_cameras[:-1][::-1] + [prev_camera]
-            future_im_paths = next_im_paths[:-1][::-1] + [prev_im_path]
-            future_depth_paths = next_depth_paths[:-1][::-1] + [prev_depth_path]
+            future_cameras = next_cameras[:-1][::-1] + prev_cameras
+            future_im_paths = next_im_paths[:-1][::-1] + prev_im_paths
+            future_depth_paths = next_depth_paths[:-1][::-1] + prev_depth_paths
 
-            prev_camera = next_cameras[-1]
-            prev_im_path = next_im_paths[-1]
-            prev_depth_path = next_depth_paths[-1]
+            prev_cameras = next_cameras[-1:]
+            prev_im_paths = next_im_paths[-1:]
+            prev_depth_paths = next_depth_paths[-1:]
             indices = torch.arange(index, index + (self.stride * self.n_future) + 1, self.stride).flip(dims=[0])
 
         data = {}
 
         # Load target, context frames.
-        ctxt_ims = rearrange(self._get_im(prev_im_path), 'h w c -> () h w c')
+        ctxt_ims = torch.stack([self._get_im(p) for p in prev_im_paths], dim=0)
         trgt_ims = torch.stack([self._get_im(p) for p in future_im_paths], dim=0)
         data.update({
             self.ctxt_key: ctxt_ims,
@@ -178,7 +179,7 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
         )
 
         # Load depths and correspondence weights.
-        depths_ctxt = rearrange(self._get_depth(prev_depth_path), 'h w c -> () h w c')
+        depths_ctxt = torch.stack([self._get_depth(p) for p in prev_depth_paths], dim=0)
         depths_trgt = torch.stack([self._get_depth(p) for p in future_depth_paths], dim=0)
         weights = torch.ones_like(depths_trgt[:,:,:,0]) # TODO - remove hack
         data.update({
@@ -190,7 +191,7 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
 
         # Load cameras.
         data.update({
-            'camera_ctxt': prev_camera,
+            'camera_ctxt': prev_cameras,
             'camera_trgt': future_cameras
             }
         )
