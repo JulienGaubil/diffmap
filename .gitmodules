@@ -1,3 +1,7 @@
-[submodule "flowcam/third_party/gmflow"]
+[submodule "ldm/modules/flowmap/third_party/gmflow"]
 	path = ldm/modules/flowmap/third_party/gmflow
 	url = https://github.com/haofeixu/gmflow.git
+
+[submodule "ldm/modules/flowmap/third_party/SEA-RAFT"]
+	path = ldm/modules/flowmap/third_party/SEA-RAFT
+	url = https://github.com/princeton-vl/SEA-RAFT.git
