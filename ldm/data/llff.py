@@ -103,9 +103,11 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
             assert len(self.frame_pair_paths) == len(self.flow_fwd_paths) == len(self.flow_bwd_paths) == len(self.flow_fwd_mask_paths) == len(self.flow_bwd_mask_paths)
 
         # # Loads depths - TODO do this properly
+        # self.tform_depth, self.correspondence_weights_transforms = self.initialize_depth_tform()
         # assert len(self.scenes) == 1, "Multi scene LLFFDiffmapDataset not yet implemented"
         # self.depths = torch.load(os.path.join(root_dir, scenes[0], "depths", "depths.pt")).detach() # (B,N,H,W), B=1
-        # self.tform_depth = self.initialize_depth_tform()
+        # self.correspondence_weights = torch.load(os.path.join(root_dir, scenes[0], "depths", "correspondence_weights.pt")).detach() # (B,N-1,H,W), B=1
+        # self.tform_depth, self.correspondence_weights_transforms = self.initialize_depth_tform()
 
     def load_scenes(self, raw_scenes: list | ListConfig | str | int) -> list[str]:
         if isinstance(raw_scenes, (list, ListConfig)):
@@ -117,7 +119,7 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
 
         return scenes
 
-    def initialize_depth_tform(self) -> transforms.Compose:
+    def initialize_depth_tform(self) -> tuple[transforms.Compose, transforms.Compose]:
         assert any([isinstance(t, transforms.Resize) for t in self.tform_im.transforms]), "Add a torchvision.transforms.Resize transformation!"
         assert any([isinstance(t, transforms.CenterCrop) for t in self.tform_im.transforms]), "Add a torchvision.transforms.CenterCrop transformation!"
 
@@ -132,8 +134,13 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
             transforms.CenterCrop(crop_size),
             transforms.Lambda(lambda depth: torch.stack([depth]*3, dim=2))
         ]
+        correspondence_weights_transforms = [
+            ResizeDepth(new_size),
+            transforms.CenterCrop(crop_size)
+        ]
         depth_transforms = transforms.Compose(depth_transforms)
-        return depth_transforms
+        correspondence_weights_transforms = transforms.Compose(correspondence_weights_transforms)
+        return depth_transforms, correspondence_weights_transforms
     
     def _get_im(self, filename: Path) -> Float[Tensor, "height width 3"]:
         im = Image.open(filename).convert("RGB")
@@ -144,8 +151,6 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
         flow_raw = torch.load(flow_path) #(H,W,C=2)
         mask_flow_raw = torch.load(flow_mask_path)
 
-        flow_raw = flow_raw / 0.0213
-
         # Apply transformations.
         flow, flow_mask = self._preprocess_flow(flow_raw, mask_flow_raw)
         return flow, flow_mask
@@ -153,7 +158,12 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
     # def _get_depth(self, index: int) -> Float[Tensor, "height width 3"]:
     #     depth_raw = self.depths[index,:,:] # (H, W)
     #     return self.tform_depth(depth_raw)
-        
+    
+    # def _get_correspondence_weights(self, index: int) ->  Float[Tensor, "height width"]:
+    #     # Load and preprocess correspondence weights.
+    #     correspondence_weights = self.correspondence_weights[index,:,:] # (H, W)
+    #     return self.correspondence_weights_transforms(correspondence_weights)
+    
     def __len__(self) -> int:
         return len(self.frame_pair_paths)
 
@@ -185,6 +195,7 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
         # # Load depth
         # data['depth_trgt'] = self._load_depth(curr_idx)
         # data['depth_ctxt'] = self._load_depth(prev_idx)
+        # data['correspondence_weights'] = self._load_correspondence_weights(prev_idx)
 
         return data
 

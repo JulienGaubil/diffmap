@@ -530,7 +530,7 @@ def sample(config: DictConfig) -> None:
 
             # Get flowmap inputs.
             if 'depth_ctxt' in batch_logs and 'depth_trgt' in batch_logs:
-                x, c, flows_input = model.get_input(batch, model.first_stage_key, return_flows=True)
+                x, c, flows_input, _  = model.get_input(batch, model.first_stage_key, return_flows_depths=True)
 
                 H, W = batch_logs['depth_ctxt']['samples'].shape[:-2]
 
