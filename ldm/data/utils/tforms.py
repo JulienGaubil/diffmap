@@ -10,29 +10,11 @@ from torchvision.transforms import functional as FT
 
 from ldm.misc.util import instantiate_from_config
 from ldm.data.utils.camera import Intrinsics
-
-
-class ResizeFlow:
-    def __init__(self, new_size: int | tuple[int,int]) -> None:
-
-        if isinstance(new_size, tuple):
-            self.new_size_H, self.new_size_W = new_size
-        else:
-            self.new_size_H = self.new_size_W = new_size
-
-    def __call__(self, flow: Float[Tensor, "xy=2 height width"]) -> Float[Tensor, "xy=2 height_new width_new"]:
-        flow_resized = FT.resize(
-            flow,
-            [self.new_size_H, self.new_size_W],
-            interpolation=transforms.InterpolationMode.BILINEAR
-        )
-
-        return flow_resized
     
 
 class CenterCropFlow:
-    def __init__(self, crop_size: int | tuple[int,int]) -> None:
-
+    def __init__(self, crop_size: int | tuple[int] | list[int]) -> None:
+        
         if isinstance(crop_size, tuple):
             self.crop_size_H, self.crop_size_W = crop_size
         else:
@@ -51,7 +33,7 @@ class CenterCropFlow:
         flow_cropped = FT.center_crop(flow, [self.crop_size_H, self.crop_size_W])
         
         # Normalize flow back.
-        _, h_cropped, w_cropped = flow.size()
+        _, h_cropped, w_cropped = flow_cropped.size()
         wh_cropped = torch.tensor((w_cropped, h_cropped), dtype=torch.float32)
         flow_cropped = flow_cropped / wh_cropped[:,None,None]
 
@@ -59,17 +41,25 @@ class CenterCropFlow:
     
 
 class ResizeDepth:
-    def __init__(self, new_size: int | tuple[int,int]) -> None:
+    def __init__(self, new_size: int | tuple[int]| list[int]) -> None:
+        
+        self.new_size = new_size
 
-        if isinstance(new_size, tuple):
-            self.new_size_H, self.new_size_W = new_size
-        else:
-            self.new_size_H = self.new_size_W = new_size
+        # if isinstance(new_size, tuple):
+        #     self.new_size_H, self.new_size_W = new_size
+        # else:
+        #     self.new_size_H = self.new_size_W = new_size
 
     def __call__(self, depth: Float[Tensor, "height width"]) -> Float[Tensor, "height_new width_new"]:
+        # depth_resized = FT.resize(
+        #     depth[None],
+        #     [self.new_size_H, self.new_size_W],
+        #     interpolation=transforms.InterpolationMode.NEAREST
+        # )
+
         depth_resized = FT.resize(
             depth[None],
-            [self.new_size_H, self.new_size_W],
+            self.new_size,
             interpolation=transforms.InterpolationMode.NEAREST
         )
 
@@ -77,12 +67,14 @@ class ResizeDepth:
 
 
 class ResizeIntrinsics:
-    def __init__(self, new_size: int | tuple[int,int]) -> None:
+    def __init__(self, new_size: int | tuple[int] | list[int]) -> None:
 
-        if isinstance(new_size, tuple):
-            self.new_size_H, self.new_size_W = new_size
-        else:
-            self.new_size_H = self.new_size_W = new_size
+        self.new_size = new_size
+
+        # if isinstance(new_size, tuple):
+        #     self.new_size_H, self.new_size_W = new_size
+        # else:
+        #     self.new_size_H = self.new_size_W = new_size
 
     def __call__(
         self,
@@ -90,23 +82,36 @@ class ResizeIntrinsics:
     ) -> Intrinsics:
         # Compute rescale ratios.
         H, W = intrinsics.resolution
-        ratio_H = H / self.new_size_H
-        ratio_W = W / self.new_size_W
+
+
+        # Fix resolution along minimal dimension, aspect ratio preserved.
+        if isinstance(self.new_size, int):           
+            aspect_ratio = H / W
+            if H > W:
+                H_new = self.new_size * aspect_ratio
+                W_new = self.new_size
+            else:
+                H_new = self.new_size
+                W_new = self.new_size / aspect_ratio
+
+        # Aspect ratio not preserved.
+        else:
+            H_new, W_new = self.new_size
 
         # Rescale intrinsics.
-        intrinsics.fx = intrinsics.fx / ratio_W
-        intrinsics.fy = intrinsics.fy / ratio_H
-        intrinsics.cx = intrinsics.cx / ratio_W
-        intrinsics.cy = intrinsics.cy / ratio_H
+        intrinsics.fx = intrinsics.fx * (W_new / W)
+        intrinsics.fy = intrinsics.fy * (H_new / H)
+        intrinsics.cx = intrinsics.cx * (W_new / W)
+        intrinsics.cy = intrinsics.cy * (H_new / H)
 
         # Update resolution.
-        intrinsics.resolution = [self.new_size_H, self.new_size_W]
+        intrinsics.resolution = [H_new, W_new]
         
         return intrinsics
     
 
 class CenterCropIntrinsics:
-    def __init__(self, crop_size: int | tuple[int,int]) -> None:
+    def __init__(self, crop_size: int | tuple[int] | list[int]) -> None:
 
         if isinstance(crop_size, tuple):
             self.crop_size_H, self.crop_size_W = crop_size

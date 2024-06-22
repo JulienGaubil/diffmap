@@ -235,7 +235,7 @@ class DDPMDiffmap(DDPM):
 
     @torch.no_grad()
     def get_input(self, batch, k, force_c_encode=False,
-                    cond_key=None, return_original_cond=False, bs=None, return_flows_depths=False):
+                    cond_key=None, return_original_cond=False, bs=None, return_flows=False):
         """
         Returns the inputs and outputs required for a diffusion sampling process and to supervise the model.
         Inputs:
@@ -304,10 +304,9 @@ class DDPMDiffmap(DDPM):
         
         #outputs
         out = [x, c] #x target image x_0, c encoding for conditioning signal
-        if return_flows_depths: #TODO properly handle modalities
+        if return_flows: #TODO properly handle modalities
             bs = default(bs, x.size(0))
             bs = min(bs, x.size(0))
-            correspondence_weights = batch['correspondence_weights'][:bs,:,:,:].to(self.device)
             flows = Flows(**{
                 "forward": batch['optical_flow'][:bs, :, :, :, :2].to(self.device),
                 "backward":  batch['optical_flow_bwd'][:bs, :, :, :, :2].to(self.device),
@@ -315,7 +314,7 @@ class DDPMDiffmap(DDPM):
                 "backward_mask": batch['optical_flow_bwd_mask'][:bs, :, :, :].to(self.device)
                 }
             )
-            out.extend([flows, correspondence_weights])
+            out.append(flows)
         if return_original_cond:
             out.append(xc)
         return out
@@ -324,7 +323,7 @@ class DDPMDiffmap(DDPM):
             self,
             depths: Float[Tensor, "sample frame channels height width"],
             flows: Flows,
-            correspondence_weights: Float[Tensor, "sample pair height width"]
+            correspondence_weights: Float[Tensor, "sample pair height width"] | None
         ) -> tuple[dict[str, Tensor], dict[str, Tensor], Float[Tensor, "sample frame height width"], Float[Tensor, "sample pair height width"]]:
         
         # Prepare depths.
@@ -337,14 +336,20 @@ class DDPMDiffmap(DDPM):
             ],
             dim=1
         )
+        B, F, H, W = depths.shape
 
-        # flows = {
-        #     "forward": flows.forward,
-        #     "backward": flows.backward,
-        #     "forward_mask": flows.forward_mask,
-        #     "backward_mask": flows.backward_mask,
-        # }
-        # flows = Flows(**flows)
+        # Prepare correspondence weights.
+        if correspondence_weights is None:
+            correspondence_weights = torch.ones((B,F-1,H,W), dtype=depths.dtype, device=depths.device)
+
+        # TODO - remove hack
+        flows = {
+            "forward": flows.forward * 0.0213,
+            "backward": flows.backward * 0.0213,
+            "forward_mask": flows.forward_mask,
+            "backward_mask": flows.backward_mask,
+        }
+        flows = Flows(**flows)
     
         # if 'camera_ctxt' in batch and 'camera_trgt' in batch:
         #     intrinsics_ctxt = torch.stack([cam.K for cam in batch['camera_ctxt']], dim=0).float() #(frame 3 3)
@@ -353,10 +358,9 @@ class DDPMDiffmap(DDPM):
         #     dummy_flowmap_batch['intrinsics'] = intrinsics
 
         # Prepare flowmap dummy batch - TODO remove hack
-        B, _ , H, W, _ = flows.forward.size()
         dummy_flowmap_batch = {
-            "videos": torch.zeros((B, 1 + self.n_future, 3, H, W), dtype=torch.float32, device=self.device),
-            "indices": repeat(torch.arange(1 + self.n_future, device=self.device), 'f -> b f', b=B),
+            "videos": torch.zeros((B, F, 3, H, W), dtype=torch.float32, device=self.device),
+            "indices": repeat(torch.arange(F, device=self.device), 'f -> b f', b=B),
             "scenes": [""],
             "datasets": [""],
         }
@@ -391,11 +395,11 @@ class DDPMDiffmap(DDPM):
             return None
 
     def shared_step(self, batch, **kwargs):
-        x, c, flows, correspondence_weights  = self.get_input(batch, self.first_stage_key, return_flows_depths=True)
-        loss = self(x, c, flows, correspondence_weights)
+        x, c, flows = self.get_input(batch, self.first_stage_key, return_flows=True)
+        loss = self(x, c, flows)
         return loss
     
-    def forward(self, x, c, flows, correspondence_weights, *args, **kwargs):
+    def forward(self, x, c, flows, *args, **kwargs):
         t = torch.randint(0, self.num_timesteps, (x.shape[0],), device=self.device).long()
         if self.model.conditioning_key is not None:
             assert c is not None
@@ -404,14 +408,13 @@ class DDPMDiffmap(DDPM):
             if self.shorten_cond_schedule:  # TODO: drop this option
                 tc = self.cond_ids[t].to(self.device)
                 c = self.q_sample(x_start=c, t=tc, noise=torch.randn_like(c.float()))
-        return self.p_losses(x, c, flows, correspondence_weights, t, *args, **kwargs)
+        return self.p_losses(x, c, flows, t, *args, **kwargs)
 
     def p_losses(
         self,
         x_start: Float[Tensor, "sample (frame channel) height width"],
         cond: list[Float[Tensor, "sample channel height width"]],
         flows: dict,
-        correspondence_weights: Float[Tensor, "sample pair=frame-1 height width"],
         t: Int[Tensor, f"sample"] ,
         noise: Float[Tensor, "sample (frame channel) height width"]| None = None
     ) -> tuple[float, dict] | None:
@@ -449,8 +452,7 @@ class DDPMDiffmap(DDPM):
         # Prepare flowmap loss inputs.
         if use_flowmap_loss:
             depths = rearrange(model_output.clean, 'b (f c) h w -> b f c h w', c=self.channels_m)
-            correspondence_weights = default(model_output.weights, correspondence_weights)
-            dummy_flowmap_batch, flows, depths, correspondence_weights = self.get_input_flowmap(depths, flows, correspondence_weights)
+            dummy_flowmap_batch, flows, depths, correspondence_weights = self.get_input_flowmap(depths, flows, model_output.weights)
 
         loss_dict = {}
         prefix = 'train' if self.training else 'val'        
@@ -948,7 +950,7 @@ class DDPMDiffmap(DDPM):
                 samples, x_denoise_row = self.sample_log(cond=c,batch_size=N,ddim=use_ddim,
                                                         ddim_steps=ddim_steps,eta=ddim_eta)
             # Format samples.
-            weights = default(samples.weights, batch["correspondence_weights"])
+            weights = samples.weights
             samples_diffusion = rearrange(samples.x_noisy, 'b (f c) h w -> b f c h w', c=self.channels_m)
             samples_diffusion = self.modalities_out.split_modalities_multiplicity(samples_diffusion, modality_names=self.modalities_out.names_denoised)
             # TODO - properly handle modalities
@@ -1012,10 +1014,11 @@ class DDPMDiffmap(DDPM):
                 
                 # Add correspondence weights and GT depths - TODO do properly by handling modalities.
                 if name_m in ['depth_trgt', 'depth_ctxt']:
-                    depths = self.get_input_modality(batch, name_m)[:N]
-                    depths = rearrange(depths, 'b (f c) h w -> b f c h w', c=self.channels_m)
-                    log[name_m]["inputs"] = depths
-                    if name_m == 'depth_trgt':
+                    if name_m in batch.keys(): # if gt depths are available
+                        depths = self.get_input_modality(batch, name_m)[:N]
+                        depths = rearrange(depths, 'b (f c) h w -> b f c h w', c=self.channels_m)
+                        log[name_m]["inputs"] = depths
+                    if name_m == 'depth_trgt' and weights is not None:
                         log[name_m]["correspondence_weights"] = weights
                 
                 # Log samples.

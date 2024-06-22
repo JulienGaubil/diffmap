@@ -145,7 +145,9 @@ class CO3DDiffmapDataset(DiffmapDataset, Dataset):
             # Load flow and mask.
             flow_raw = torch.load(flow_paths[k]).to(torch.float32) #(H,W,C=2)
             mask_flow_raw = torch.load(flow_mask_paths[k]).to(torch.float32)
-            
+
+            flow_raw = flow_raw / 0.0213
+
             # Apply transformations.
             flow, flow_mask = self._preprocess_flow(flow_raw, mask_flow_raw)
             flows.append(flow)

@@ -4,15 +4,14 @@ model:
   params:
     log_every_t: 1 #when logging generated samples, frequency of logging for intermediate samples  
     timesteps: 1 #sampling timesteps in forward/backward
-    channels: 0 #number of noisy channels as input of U-Net
     conditioning_key: concat #defines the type of conditioning ie (crossattn, concat, hybrid)
     parameterization: x0
     unet_trainable: all  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn, false)
     compute_weights: True
-    modalities_in: []
-    modalities_out: #modalities as output of the U-Net
-    - depth_trgt
-    - depth_ctxt
+    # modalities_in: []
+    # modalities_out: #modalities as output of the U-Net
+    # - depth_trgt
+    # - depth_ctxt
     ckpt_path: null
 
     unet_config:

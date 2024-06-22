@@ -11,7 +11,7 @@ val_scenes: [000096, 000097, 000098, 000099, '000100']
 data:
   params:
     batch_size: 16
-    num_workers: 8
+    num_workers: 16
     train:
       params:
         scenes: ${scenes}

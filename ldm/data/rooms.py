@@ -59,7 +59,7 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
         assert len(self.depth_pairs_paths) == len(self.frame_pair_paths) == len(self.cameras_pairs)
         
         # Create transforms.
-        self.tform_depth, self.tform_correspondence_weights = self.initialize_depth_tform()
+        self.tform_depth = self.initialize_depth_tform()
         self.tform_intrinsics = self.initialize_intrinsics_tform()
 
     def initialize_intrinsics_tform(self) -> transforms.Compose:
@@ -88,6 +88,8 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
             flow_raw = torch.load(flow_paths[k]) #(H,W,C=2)
             mask_flow_raw = torch.load(flow_mask_paths[k])
 
+            flow_raw = flow_raw / 0.0213
+
             # Apply transformations.
             flow, flow_mask = self._preprocess_flow(flow_raw, mask_flow_raw)
             flows.append(flow)
@@ -111,11 +113,6 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
             future_cameras[k].intrinsics = self.tform_intrinsics(future_cameras[k].intrinsics)
 
         return prev_camera, future_cameras
-        
-    # def _get_correspondence_weights(self, index: int) ->  Float[Tensor, "height width"]:
-    #     # Load and preprocess correspondence weights.
-    #     correspondence_weights = self.correspondence_weights[index,:,:] # (H, W)
-    #     return self.tform_correspondence_weights(correspondence_weights)
 
     def __getitem__(self, index: int) -> dict[Float[Tensor, "..."]]:
 
@@ -181,11 +178,9 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
         # Load depths and correspondence weights.
         depths_ctxt = torch.stack([self._get_depth(p) for p in prev_depth_paths], dim=0)
         depths_trgt = torch.stack([self._get_depth(p) for p in future_depth_paths], dim=0)
-        weights = torch.ones_like(depths_trgt[:,:,:,0]) # TODO - remove hack
         data.update({
             'depth_ctxt': depths_ctxt,
             'depth_trgt': depths_trgt,
-            'correspondence_weights': weights
             }
         )
 
