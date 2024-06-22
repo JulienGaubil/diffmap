@@ -1,9 +1,11 @@
 import pytorch_lightning as pl
 import numpy as np
 import torch
+
 from torch.utils.data import IterableDataset, random_split, DataLoader, Dataset, Subset
 from functools import partial
 from typing import List
+from omegaconf import ListConfig, DictConfig
 
 from ldm.data.base import Txt2ImgIterableBaseDataset
 from ldm.misc.util import instantiate_from_config, get_obj_from_str
@@ -54,67 +56,107 @@ class WrappedDataset(Dataset):
 
 
 class DataModuleFromConfig(pl.LightningDataModule):
-    def __init__(self, batch_size, train=None, validation=None, test=None, predict=None,
-                 wrap=False, num_workers=None, shuffle_test_loader=False, use_worker_init_fn=False,
-                 shuffle_val_dataloader=False, num_val_workers=None, collate_fn: str = None):
+    def __init__(
+        self,
+        batch_size: int,
+        train: DictConfig | None = None,
+        validation: DictConfig | None = None,
+        test: DictConfig | None = None,
+        predict: DictConfig | None = None,
+        num_workers: int | None = None,
+        num_val_workers: int | None = None,
+        use_worker_init_fn: bool = False,
+        collate_fn: str | None = None,
+        wrap: bool = False,
+        shuffle_val_dataloader: bool = False,
+        shuffle_test_loader: bool = False,
+    ) -> None:
+        
         super().__init__()
+
         self.batch_size = batch_size
-        self.dataset_configs = dict()
+
+        # Set workers.
         self.num_workers = num_workers if num_workers is not None else batch_size * 2
         if num_val_workers is None:
             self.num_val_workers = self.num_workers
         else:
             self.num_val_workers = num_val_workers
         self.use_worker_init_fn = use_worker_init_fn
+
+        # Set datasets configs and set dataloaders instatiators.
+        self.dataset_configs = dict()
         if train is not None:
             self.dataset_configs["train"] = train
             self.train_dataloader = self._train_dataloader
+
         if validation is not None:
             self.dataset_configs["validation"] = validation
             if self.dataset_configs["validation"].get('params', {}).get('val_scenes', []) is not None:
                 self.val_dataloader = partial(self._val_dataloader, shuffle=shuffle_val_dataloader)
+        
         if test is not None:
             self.dataset_configs["test"] = test
             self.test_dataloader = partial(self._test_dataloader, shuffle=shuffle_test_loader)
+        
         if predict is not None:
             self.dataset_configs["predict"] = predict
             self.predict_dataloader = self._predict_dataloader
+        
+        # Use custom collate function.
         if collate_fn is not None:
             self.collate_fn = get_obj_from_str(collate_fn)
+        
         self.wrap = wrap
 
-    def prepare_data(self):
+    def prepare_data(self) -> None:
         for data_cfg in self.dataset_configs.values():
             instantiate_from_config(data_cfg)
 
-    def setup(self, stage=None):
-        self.datasets = dict(
-            (k, instantiate_from_config(self.dataset_configs[k]))
-            for k in self.dataset_configs) #clefs "train", "validation", "test" (depend des splits definis dans config)
+    def setup(self, stage=None) -> None:
+        # Instantiate datasets.
+        self.datasets = {
+            k: instantiate_from_config(self.dataset_configs[k])
+            for k in self.dataset_configs
+        }
+
         if self.wrap:
             for k in self.datasets:
                 self.datasets[k] = WrappedDataset(self.datasets[k])
 
-    def _train_dataloader(self):
+    def _train_dataloader(self) -> DataLoader:
+        # Set workers initialization.
         is_iterable_dataset = isinstance(self.datasets['train'], IterableDataset)
         if is_iterable_dataset or self.use_worker_init_fn:
             init_fn = worker_init_fn
         else:
             init_fn = None
-        return DataLoader(self.datasets["train"], batch_size=self.batch_size,
-                          num_workers=self.num_workers, shuffle=False if is_iterable_dataset else True,
-                          worker_init_fn=init_fn, collate_fn=self.collate_fn)
 
-    def _val_dataloader(self, shuffle=False):
+        # Create train loader.
+        shuffle = False if is_iterable_dataset else True # disabled for iterable dataset
+        return DataLoader(
+            self.datasets["train"],
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            shuffle=shuffle,
+            worker_init_fn=init_fn,
+            collate_fn=self.collate_fn
+        )
+
+    def _val_dataloader(self, shuffle=False) -> DataLoader:
         if isinstance(self.datasets['validation'], IterableDataset) or self.use_worker_init_fn:
             init_fn = worker_init_fn
         else:
             init_fn = None
-        return DataLoader(self.datasets["validation"],
-                          batch_size=self.batch_size,
-                          num_workers=self.num_val_workers,
-                          worker_init_fn=init_fn,
-                          shuffle=shuffle, collate_fn=self.collate_fn)
+        
+        # Create val loader.
+        return DataLoader(
+            self.datasets["validation"],
+            batch_size=self.batch_size,
+            num_workers=self.num_val_workers,
+            worker_init_fn=init_fn,
+            shuffle=shuffle, collate_fn=self.collate_fn
+        )
 
     def _test_dataloader(self, shuffle=False):
         is_iterable_dataset = isinstance(self.datasets['train'], IterableDataset)
@@ -123,16 +165,26 @@ class DataModuleFromConfig(pl.LightningDataModule):
         else:
             init_fn = None
 
-        # do not shuffle dataloader for iterable dataset
-        shuffle = shuffle and (not is_iterable_dataset)
-
-        return DataLoader(self.datasets["test"], batch_size=self.batch_size,
-                          num_workers=self.num_workers, worker_init_fn=init_fn, shuffle=shuffle, collate_fn=self.collate_fn)
+        # Create test loader.
+        shuffle = shuffle and (not is_iterable_dataset) # disabled for iterable dataset
+        return DataLoader(
+            self.datasets["test"],
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            worker_init_fn=init_fn,
+            shuffle=shuffle,
+            collate_fn=self.collate_fn
+        )
 
     def _predict_dataloader(self, shuffle=False):
         if isinstance(self.datasets['predict'], IterableDataset) or self.use_worker_init_fn:
             init_fn = worker_init_fn
         else:
             init_fn = None
-        return DataLoader(self.datasets["predict"], batch_size=self.batch_size,
-                          num_workers=self.num_workers, worker_init_fn=init_fn, collate_fn=self.collate_fn)
+        return DataLoader(
+            self.datasets["predict"],
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            worker_init_fn=init_fn,
+            collate_fn=self.collate_fn
+        )

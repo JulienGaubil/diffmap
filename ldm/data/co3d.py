@@ -13,7 +13,6 @@ from torch.utils.data import Dataset, IterableDataset
 from omegaconf import ListConfig
 
 from .diffmap import DiffmapDataset
-from .utils.tforms import ResizeDepth
 
 class CO3DDiffmapDataset(DiffmapDataset, Dataset):
     def __init__(self,

@@ -1,7 +1,9 @@
 [submodule "ldm/modules/flowmap/third_party/gmflow"]
 	path = ldm/modules/flowmap/third_party/gmflow
 	url = https://github.com/haofeixu/gmflow.git
+	ignore = dirty
 
 [submodule "ldm/modules/flowmap/third_party/searaft"]
 	path = ldm/modules/flowmap/third_party/searaft
 	url = https://github.com/princeton-vl/SEA-RAFT.git
+	ignore = dirty

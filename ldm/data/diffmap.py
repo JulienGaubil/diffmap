@@ -12,7 +12,7 @@ from torchvision import transforms
 from omegaconf import ListConfig
 
 from ldm.misc.util import instantiate_from_config
-from .utils.tforms import ResizeFlow, CenterCropFlow
+from .utils.tforms import CenterCropFlow
 
 
 class DiffmapDataset(ABC):
@@ -75,7 +75,7 @@ class DiffmapDataset(ABC):
         image_transforms = transforms.Compose(image_transforms)
         return image_transforms
     
-    def initialize_flow_tform(self) -> tuple[transforms.Compose, transforms.Compose]:
+    def initialize_flow_tform(self) -> tuple[transforms.Compose]:
         assert any([isinstance(t, transforms.Resize) for t in self.tform_im.transforms]), "Add a torchvision.transforms.Resize transformation!"
         assert any([isinstance(t, transforms.CenterCrop) for t in self.tform_im.transforms]), "Add a torchvision.transforms.CenterCrop transformation!"
 
@@ -87,14 +87,14 @@ class DiffmapDataset(ABC):
 
         flow_transforms = [
             transforms.Lambda(lambda flow: rearrange(flow , 'h w c -> c h w')),
-            ResizeFlow(new_size),
+            transforms.Resize(new_size),
             CenterCropFlow(crop_size),
             transforms.Lambda(lambda flow: rearrange(flow , 'c h w -> h w c')),
             transforms.Lambda(lambda flow: torch.cat([flow, torch.zeros_like(flow[:,:,0,None])], dim=2))
         ]
         flow_mask_transforms = [
             transforms.Lambda(lambda mask_flow: mask_flow.unsqueeze(0)),
-            ResizeFlow(new_size),
+            transforms.Resize(new_size),
             transforms.CenterCrop(crop_size),
             transforms.Lambda(lambda mask_flow: mask_flow.squeeze(0))            
         ]

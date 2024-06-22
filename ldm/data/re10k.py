@@ -18,13 +18,12 @@ from torch import Tensor
 from numpy import ndarray
 from torch.utils.data import IterableDataset
 from torchvision import transforms
+from functools import partial
 
 from .diffmap import DiffmapDataset
 import numpy as np
 import glob
 import os, os.path
-
-from .utils.tforms import ResizeDepth
 
 to_tensor = tf.ToTensor()
 
@@ -92,7 +91,7 @@ class Re10kDiffmapDataset(DiffmapDataset, IterableDataset):
         # # Loads depths - TODO do this properly
         # self.depths = torch.load(os.path.join(self.root_dir, scenes[0], "depths", "depths.pt")).detach()
         # self.correspondence_weights = torch.load(os.path.join(self.root_dir, scenes[0], "depths", "correspondence_weights.pt")).detach()
-        self.tform_depth, self.correspondence_weights_transforms = self.initialize_depth_tform()
+        self.tform_depth = self.initialize_depth_tform()
 
     def _get_im(self, image: UInt8[Tensor, "..."]) ->  Float[Tensor, "height width 3"]:
         pil_im = Image.open(BytesIO(image.numpy().tobytes()))
@@ -136,7 +135,7 @@ class Re10kDiffmapDataset(DiffmapDataset, IterableDataset):
         self.flow_fwd_mask_paths = [self.flow_fwd_mask_paths[id] for id in indices]
         self.flow_bwd_mask_paths = [self.flow_bwd_mask_paths[id] for id in indices]
 
-    def initialize_depth_tform(self) -> None:
+    def initialize_depth_tform(self) -> transforms.Compose:
         assert any([isinstance(t, transforms.Resize) for t in self.tform_im.transforms]), "Add a torchvision.transforms.Resize transformation!"
         assert any([isinstance(t, transforms.CenterCrop) for t in self.tform_im.transforms]), "Add a torchvision.transforms.CenterCrop transformation!"
 
@@ -147,17 +146,16 @@ class Re10kDiffmapDataset(DiffmapDataset, IterableDataset):
                 crop_size = t.size
 
         depth_transforms = [
-            ResizeDepth(new_size),
-            transforms.CenterCrop(crop_size),
-        ]
-        correspondence_weights_transforms = [
-            ResizeDepth(new_size),
+            transforms.Lambda(lambda flow: rearrange(flow , 'h w -> () h w')),
+            partial(transforms.Resize(new_size, interpolation=transforms.InterpolationMode.NEAREST)),
+            transforms.Lambda(lambda flow: rearrange(flow , '() h w -> h w')),
             transforms.CenterCrop(crop_size),
             transforms.Lambda(lambda depth: torch.stack([depth]*3, dim=2))
         ]
+
+
         depth_transforms = transforms.Compose(depth_transforms)
-        correspondence_weights_transforms = transforms.Compose(correspondence_weights_transforms)
-        return depth_transforms, correspondence_weights_transforms
+        return depth_transforms
     
     def _get_depth(self, depth: Float[Tensor, "raw_height raw_width"]) -> Float[Tensor, "height width 3"]:
         return self.tform_depth(depth)
