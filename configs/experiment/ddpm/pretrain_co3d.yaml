@@ -1,0 +1,51 @@
+# @package _global_
+
+defaults:
+  - override /data: co3d
+
+# Anchors with references.
+image_size: 64
+categories: 'hydrant'
+scenes: null
+val_scenes: ['421_58422_112570','421_58428_112592','421_58448_112675','421_58453_112679','421_58481_112925','423_58828_113391','423_58839_113399','423_58880_113838','423_58894_113885','423_58949_114399']
+
+data:
+  params:
+    batch_size: 16
+    num_workers: 16
+    train:
+      params:
+        categories: ${categories}
+        scenes: ${scenes}
+        val_scenes: ${val_scenes}
+    validation:
+      params:
+          categories: ${categories}
+          scenes: ${scenes}
+          val_scenes: ${val_scenes}
+    test: null
+
+model:
+  params:
+    scheduler_config:
+      params:
+        warm_up_steps: [0,2000]
+        cycle_lengths: [2000,10000000000000]
+
+
+lightning:
+  callbacks: #configs for image logger
+    image_logger:
+      params:
+        batch_frequency: 1000 #frequency of logging images (counted in iterations) for train and val
+
+  trainer:
+    gpus: [0]
+    max_epochs: 5_000
+    max_steps: 100_000
+    check_val_every_n_epoch: 1 #frequency of validation in epochs
+    limit_val_batches: 1  # to enable validation
+
+experiment_cfg:
+  logdir: logs
+  name: co3d_pretrain_diffmap

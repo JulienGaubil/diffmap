@@ -1,5 +1,5 @@
 target: ldm.lr_scheduler.LambdaLinearScheduler
-base_learning_rate: 1.0e-03
+base_learning_rate: 1.0e-04
 params:
   warm_up_steps: [0, 2000] # constant then linear decrease during 2000 steps
   cycle_lengths: [5000, 10000000000000 ] # constant during 5000 steps
