@@ -7,3 +7,8 @@
 	path = ldm/modules/flowmap/third_party/searaft
 	url = https://github.com/princeton-vl/SEA-RAFT.git
 	ignore = dirty
+
+[submodule "ldm/modules/flowmap/third_party/raft"]
+	path = ldm/modules/flowmap/third_party/raft
+	url = https://github.com/princeton-vl/RAFT.git
+	ignore = dirty
