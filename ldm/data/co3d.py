@@ -85,6 +85,13 @@ class CO3DDiffmapDataset(DiffmapDataset, Dataset):
                 paths_flow_bwd = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_backward_raft_stride_3", "flow_bwd_*.pt")))
                 paths_flow_fwd_mask = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_forward_raft_stride_3", "mask_flow_fwd*.pt")))
                 paths_flow_bwd_mask = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_backward_raft_stride_3", "mask_flow_bwd*.pt")))
+            # TODO - remove hack
+            elif self.stride == 12:
+                paths_frames = sorted((self.root_dir / scene / "images_diffmap_raft_stride_12").iterdir())
+                paths_flow_fwd = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_forward_raft_stride_12", "flow_fwd_*.pt")))
+                paths_flow_bwd = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_backward_raft_stride_12", "flow_bwd_*.pt")))
+                paths_flow_fwd_mask = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_forward_raft_stride_12", "mask_flow_fwd*.pt")))
+                paths_flow_bwd_mask = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_backward_raft_stride_12", "mask_flow_bwd*.pt")))
             else:
                 raise Exception(f'Stride {self.stride} not valid, should be 1 or 3.')
             

@@ -30,7 +30,6 @@ with install_import_hook(
         CroppingCfg
     )
     from ..modules.flowmap.dataset.types import Batch
-    from ..modules.flowmap.flow import compute_flows
 
 # from .preprocess import preprocess_flow, get_parser
 from .preprocess_llff import load_frames_llff, dump_llff
@@ -52,10 +51,10 @@ def dump_scene(
 
     frames = batch.videos.squeeze(0) # (frame 3 height width)
     indices = batch.indices.squeeze(0) # (frame)
-    fwd_flows = flows.forward.squeeze(0) # (pair=frame-1 3 height width 2)
-    bwd_flows = flows.backward.squeeze(0) # (pair=frame-1 3 height width 2)
-    masks_flow_fwd = flows.forward_mask.squeeze(0) # (pair=frame-1 3 height width)
-    masks_flow_bwd = flows.backward_mask.squeeze(0) # (pair=frame-1 3 height width)
+    fwd_flows = flows.forward.squeeze(0) # (pair=frame-1 height width 2)
+    bwd_flows = flows.backward.squeeze(0) # (pair=frame-1 height width 2)
+    masks_flow_fwd = flows.forward_mask.squeeze(0) # (pair=frame-1 height width)
+    masks_flow_bwd = flows.backward_mask.squeeze(0) # (pair=frame-1 height width)
     
     img_path = os.path.join(scene_path, "images_diffmap_raft" + suffix)
     flow_fwd_path = os.path.join(scene_path, "flow_forward_raft" + suffix)
@@ -69,6 +68,7 @@ def dump_scene(
 
     for i in tqdm(range(frames.size(0)), desc="dumping files"):
         curr_idx = int(indices[i])
+        curr_frame = frames[i].clone()
 
         if i < frames.size(0) - 1:
             # Clone slices (else saves the whole tensor, see: https://discuss.pytorch.org/t/saving-tensor-with-torch-save-uses-too-much-memory/46865/3)
@@ -76,7 +76,6 @@ def dump_scene(
             bwd_flow = bwd_flows[i].clone().to(torch.float16)
             mask_flow_fwd = masks_flow_fwd[i].clone().to(torch.float16)
             mask_flow_bwd = masks_flow_bwd[i].clone().to(torch.float16)
-            curr_frame = frames[i].clone()
             # next_frame = frames[i + 1].clone()
             next_idx = int(indices[i+1])
             
@@ -86,10 +85,10 @@ def dump_scene(
             torch.save(mask_flow_fwd, flow_fwd_path / Path(f'mask_flow_fwd_%06d_%06d.pt'%(curr_idx, next_idx)) )
             torch.save(mask_flow_bwd, flow_bwd_path / Path(f'mask_flow_bwd_%06d_%06d.pt'%(curr_idx, next_idx)) )
 
-            fwd_flow_viz = rearrange(fwd_flow, "h w xy -> xy h w")
-            bwd_flow_viz = rearrange(bwd_flow, "h w xy -> xy h w")
-            fwd_flow_viz = flow_to_color(fwd_flow_viz) / 255
-            bwd_flow_viz = flow_to_color(bwd_flow_viz) / 255
+            # fwd_flow_viz = rearrange(fwd_flow, "h w xy -> xy h w")
+            # bwd_flow_viz = rearrange(bwd_flow, "h w xy -> xy h w")
+            # fwd_flow_viz = flow_to_color(fwd_flow_viz) / 255
+            # bwd_flow_viz = flow_to_color(bwd_flow_viz) / 255
             # save_image(fwd_flow_viz, flow_fwd_path / Path(f'flow_fwd_%06d_%06d.png'%(curr_idx, next_idx)) )
             # save_image(bwd_flow_viz, flow_bwd_path / Path(f'flow_bwd_%06d_%06d.png'%(curr_idx, next_idx)) )
         

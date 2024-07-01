@@ -3,13 +3,14 @@ import torch
 from torch import Tensor
 from jaxtyping import Float
 from torchvision.transforms import functional as FT
+import collections
 
 from ldm.data.utils.camera import Intrinsics   
 
 
 class CenterCropFlow:
     def __init__(self, crop_size: int | tuple[int] | list[int]) -> None:
-        if isinstance(crop_size, tuple):
+        if isinstance(crop_size, collections.abc.Sequence):
             self.crop_size_H, self.crop_size_W = crop_size
         else:
             self.crop_size_H = self.crop_size_W = crop_size
@@ -63,7 +64,7 @@ class ResizeIntrinsics:
 
 class CenterCropIntrinsics:
     def __init__(self, crop_size: int | tuple[int] | list[int]) -> None:
-        if isinstance(crop_size, tuple):
+        if isinstance(crop_size, collections.abc.Sequence):
             self.crop_size_H, self.crop_size_W = crop_size
         else:
             self.crop_size_H = self.crop_size_W = crop_size

@@ -46,18 +46,19 @@ def dump_rooms(
     os.makedirs(flow_fwd_path, exist_ok=True)
     os.makedirs(flow_bwd_path, exist_ok=True)
     os.makedirs(img_path, exist_ok=True)
+    
 
     assert frames.size(0) - stride  == fwd_flows.size(0) == bwd_flows.size(0) == masks_flow_fwd.size(0) == masks_flow_bwd.size(0)
 
     for i in tqdm(range(frames.size(0)), desc="dumping files"):
+        curr_frame = frames[i].clone()
 
         if i < frames.size(0) - stride:
             # Clone slices (else saves the whole tensor, see: https://discuss.pytorch.org/t/saving-tensor-with-torch-save-uses-too-much-memory/46865/3)
-            fwd_flow = fwd_flows[i].clone()
-            bwd_flow = bwd_flows[i].clone()
-            mask_flow_fwd = masks_flow_fwd[i].clone()
-            mask_flow_bwd = masks_flow_bwd[i].clone()
-            curr_frame = frames[i].clone()
+            fwd_flow = fwd_flows[i].clone().to(torch.float16)
+            bwd_flow = bwd_flows[i].clone().to(torch.float16)
+            mask_flow_fwd = masks_flow_fwd[i].clone().to(torch.float16)
+            mask_flow_bwd = masks_flow_bwd[i].clone().to(torch.float16)
             next_frame = frames[i + stride].clone()
             
             # Save flow, RGB flow viz and frames.
@@ -143,6 +144,12 @@ def preprocess_flow_projection(
     frames = list()
     for idx in tqdm(range(0, len(depth_files))):
 
+        # Load and resize RGB frames.
+        src_image = np.asarray(Image.open(rgb_files[idx]).convert("RGB")) #(H, W, 3), [0, 255]
+        src_image = rearrange(torch.from_numpy(src_image.copy()), 'h w c -> c h w')
+        src_image = torchvision.transforms.functional.resize(src_image, [H_trgt, W_trgt], interpolation=transforms.InterpolationMode.BILINEAR).type(torch.float) #(3, H, W), [0, 255]
+        src_image = src_image / 255
+
         if idx < len(depth_files) - stride:
 
             prev_camera = cameras[idx]
@@ -163,13 +170,9 @@ def preprocess_flow_projection(
             ).type(torch.float) #(3, H, W), [0, 255]
 
             # Load and resize RGB frames.
-            src_image = np.asarray(Image.open(rgb_files[idx]).convert("RGB")) #(H, W, 3), [0, 255]
             trgt_image = np.asarray(Image.open(rgb_files[idx + stride]).convert("RGB")) #(H, W, 3), [0, 255]
-            src_image = rearrange(torch.from_numpy(src_image.copy()), 'h w c -> c h w')
             trgt_image = rearrange(torch.from_numpy(trgt_image.copy()), 'h w c -> c h w')
-            src_image = torchvision.transforms.functional.resize(src_image, [H_trgt, W_trgt], interpolation=transforms.InterpolationMode.BILINEAR).type(torch.float) #(3, H, W), [0, 255]
             trgt_image = torchvision.transforms.functional.resize(trgt_image, [H_trgt, W_trgt], interpolation=transforms.InterpolationMode.BILINEAR).type(torch.float) #(3, H, W), [0, 255]
-            src_image = src_image / 255
             trgt_image = trgt_image / 255
             
             # Compute flows.
