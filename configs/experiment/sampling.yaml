@@ -13,6 +13,7 @@ scenes: null
 val_scenes: null
 image_size: 64
 n_future: 1
+n_ctxt: 1
 channels_m: 3
 stride: 1
 flip_trajectories: False
@@ -38,8 +39,6 @@ model:
 
     unet_config:
       params:
-        in_channels: ${linear:${n_future}, 6, 3} #number of input channels U-Net, 6 = 2*3 noisy input channels + 3 for conditionning
-        out_channels: ${linear:${n_future}, 9, 3} #number of output channels U-Net, (rbg trgt + depth trgt + flow) * n_future + depth_ctxt 3*3 + 3 noisy output channels
         model_channels: 320 #number of intermediate layer channels across the U-Net
         attention_resolutions: [ 4, 2, 1]
         # use_spatial_transformer: True

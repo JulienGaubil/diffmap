@@ -5,8 +5,6 @@ image_size: 64
 
 params:
   image_size: ${image_size} # unused
-  in_channels: 9 #number of input channels U-Net, should be multiple of 4 (original size)
-  out_channels: 12 #number of output channels U-Net, should be multiple of 4 (original size)
   model_channels: 320 #number of intermediate layer channels across the U-Net
   attention_resolutions: [4, 2, 1]
   num_res_blocks: 2

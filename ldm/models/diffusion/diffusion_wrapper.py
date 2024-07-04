@@ -10,7 +10,6 @@ from dataclasses import dataclass
 import torch.nn.functional as F
 from ldm.misc.util import instantiate_from_config
 from ldm.modules.flowmap.model.backbone.backbone_midas import make_net
-from ldm.models.diffusion.types import DiffusionOutput
 from ldm.misc.modalities import Modalities
 
 
@@ -55,7 +54,7 @@ class DiffusionMapWrapper(pl.LightningModule):
         c_concat: list[Float[Tensor, "batch channel height width"]] | None = None,
         c_crossattn: list[Float[Tensor, '...']] | None = None,
         c_adm: None = None
-    ) -> DiffusionOutput:
+    ) -> tuple[Float[Tensor, "batch channel height width"] | None]:
         
         #U-Net forward pass for N-1 layers.
         if self.conditioning_key is None:
@@ -86,14 +85,14 @@ class DiffusionMapWrapper(pl.LightningModule):
 
         # Separate noisy and clean modalities.
         denoised, clean = self.modalities_out.split_noisy_clean(diff_out)
-        out = DiffusionOutput(denoised, clean)
 
         # Compute correspondence weights. 
         if self.compute_weights:
             weights = self.compute_correspondence_weights(features)
-            out.weights = weights
+        else:
+            weights = None
 
-        return out
+        return denoised, clean, weights
     
     def compute_correspondence_weights(
         self,

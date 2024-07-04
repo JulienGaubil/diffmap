@@ -10,7 +10,7 @@ from torch import Tensor
 
 from ldm.modules.diffusionmodules.util import make_ddim_sampling_parameters, make_ddim_timesteps, noise_like, extract_into_tensor
 from ldm.models.diffusion.sampling_util import renorm_thresholding, norm_thresholding, spatial_norm_thresholding
-from ldm.models.diffusion.types import Sample, DiffusionOutput
+from ldm.models.diffusion.types import Sample
 
 
 class DDIMSampler(object):
@@ -417,7 +417,7 @@ class DDIMSamplerDiffmap(DDIMSampler):
 
         # Prepare sampling initialization.
         img = torch.randn(shape, device=device) if x_T is None else x_T
-        samples = Sample(img, timesteps[-1])
+        samples = Sample(t=timesteps[-1], x_denoised=img)
         intermediates = {'x_inter': [img], 'pred_x0': [img]}
         
         print(f"Running DDIM Sampling with {total_steps} timesteps")
@@ -439,11 +439,11 @@ class DDIMSamplerDiffmap(DDIMSampler):
                                       unconditional_conditioning=unconditional_conditioning,
                                       dynamic_threshold=dynamic_threshold)
             if callback:
-                samples.x_noisy = callback(i, samples.x_noisy, samples.x_recon)
+                samples.x_denoised = callback(i, samples.x_denoised, samples.x_recon)
             if img_callback: img_callback(samples.x_recon, i)
 
             if index % log_every_t == 0 or index == total_steps - 1:
-                intermediates['x_inter'].append(samples.x_noisy)
+                intermediates['x_inter'].append(samples.x_denoised)
                 intermediates['pred_x0'].append(samples.x_recon)
 
         return samples, intermediates
@@ -453,12 +453,12 @@ class DDIMSamplerDiffmap(DDIMSampler):
                       temperature=1., noise_dropout=0., score_corrector=None, corrector_kwargs=None,
                       unconditional_guidance_scale=1., unconditional_conditioning=None,
                       dynamic_threshold=None):
-        x_noisy = samples.x_noisy
+        x_noisy = samples.x_denoised
         b, *_, device = *x_noisy.shape, x_noisy.device
 
         if unconditional_conditioning is None or unconditional_guidance_scale == 1.:
-            model_output = self.model.apply_model(x_noisy, t, c)
-            e_t = model_output.diff_output
+            denoised, clean, weights = self.model.apply_model(x_noisy, t, c)
+            e_t = denoised
         else:
             x_in = torch.cat([x_noisy] * 2)
             t_in = torch.cat([t] * 2)
@@ -476,8 +476,8 @@ class DDIMSamplerDiffmap(DDIMSampler):
                                 c[k]])
             else:
                 c_in = torch.cat([unconditional_conditioning, c])
-            model_output = self.model.apply_model(x_in, t_in, c_in)
-            e_t_uncond, e_t = model_output.diff_output.chunk(2)
+            denoised, clean, weights = self.model.apply_model(x_in, t_in, c_in)
+            e_t_uncond, e_t = denoised.chunk(2)
             e_t = e_t_uncond + unconditional_guidance_scale * (e_t - e_t_uncond)
 
         if score_corrector is not None:
@@ -508,23 +508,12 @@ class DDIMSamplerDiffmap(DDIMSampler):
             noise = torch.nn.functional.dropout(noise, p=noise_dropout)
         x_prev = a_prev.sqrt() * pred_x0 + dir_xt + noise
 
-        # Compute depths.
-        if self.model.modalities_out.n_clean_channels > 0:
-            if self.model.model.latent:
-                assert False, "depth sampling with multiple future frames not implemented for LDM"
-                depths = self.model.decode_first_stage_all(model_output.clean, ["depth_ctxt", "depth_trgt"])
-            else:
-                depths = rearrange(model_output.clean, 'b (f c) h w -> b f c h w', c=self.model.channels_m)
-            depths = self.model.to_depth(depths)
-        else:
-            depths = None
-
         # Update sample.
-        samples.x_noisy = x_prev
+        samples.x_denoised = x_prev
         samples.x_recon = pred_x0
         samples.t = t
-        samples.depths = depths
-        samples.weights = model_output.weights
+        samples.x_predicted = clean
+        samples.weights = weights
 
         return samples
 
@@ -552,9 +541,11 @@ class DDIMSamplerDiffmap(DDIMSampler):
                 noise_pred = self.model.apply_model(x_next, t, c)
             else:
                 assert unconditional_conditioning is not None
-                e_t_uncond, noise_pred = torch.chunk(
-                    self.model.apply_model(torch.cat((x_next, x_next)), torch.cat((t, t)),
-                                           torch.cat((unconditional_conditioning, c))), 2).diff_output
+                denoised, clean, weights = self.model.apply_model(
+                    torch.cat((x_next, x_next)), torch.cat((t, t)),
+                    torch.cat((unconditional_conditioning, c))
+                )
+                e_t_uncond, noise_pred = torch.chunk(denoised, 2)
                 noise_pred = e_t_uncond + unconditional_guidance_scale * (noise_pred - e_t_uncond)
 
             xt_weighted = (alphas_next[i] / alphas[i]).sqrt() * x_next

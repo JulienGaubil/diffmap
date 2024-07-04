@@ -156,8 +156,8 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
         ctxt_ims = torch.stack([self._get_im(p) for p in prev_im_paths], dim=0)
         trgt_ims = torch.stack([self._get_im(p) for p in future_im_paths], dim=0)
         data.update({
-            self.ctxt_key: ctxt_ims,
-            self.trgt_key: trgt_ims,
+            'ctxt_rgb': ctxt_ims,
+            'trgt_rgb': trgt_ims,
             'indices': indices
             }
         )
@@ -166,10 +166,10 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
         flows_fwd, flow_fwd_masks = self._get_flow(fwd_flow_paths, fwd_flow_mask_paths)
         flows_bwd, flow_bwd_masks = self._get_flow(bwd_flow_paths, bwd_flow_mask_paths)
         data.update({
-            'optical_flow': flows_fwd,
-            'optical_flow_bwd': flows_bwd,
-            'optical_flow_mask': flow_fwd_masks,
-            'optical_flow_bwd_mask': flow_bwd_masks
+            'fwd_flow': flows_fwd,
+            'bwd_flow': flows_bwd,
+            'mask_fwd_flow': flow_fwd_masks,
+            'mask_bwd_flow': flow_bwd_masks
             }
         )
 
@@ -177,15 +177,15 @@ class RoomsDiffmapDataset(LLFFDiffmapDataset):
         depths_ctxt = torch.stack([self._get_depth(p) for p in prev_depth_paths], dim=0)
         depths_trgt = torch.stack([self._get_depth(p) for p in future_depth_paths], dim=0)
         data.update({
-            'depth_ctxt': depths_ctxt,
-            'depth_trgt': depths_trgt,
+            'ctxt_depth': depths_ctxt,
+            'trgt_depth': depths_trgt,
             }
         )
 
         # Load cameras.
         data.update({
-            'camera_ctxt': prev_cameras,
-            'camera_trgt': future_cameras
+            'ctxt_camera': prev_cameras,
+            'trgt_camera': future_cameras
             }
         )
         

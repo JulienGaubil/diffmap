@@ -18,8 +18,6 @@ class CO3DDiffmapDataset(DiffmapDataset, Dataset):
     def __init__(self,
         root_dir: str,
         image_transforms: list = [],
-        trgt_key: str = 'trgt',
-        ctxt_key: str = 'ctxt',
         split: str = 'train',
         scenes: list | ListConfig | str | int | None = None,
         categories: list | ListConfig | str | None = None,
@@ -29,12 +27,10 @@ class CO3DDiffmapDataset(DiffmapDataset, Dataset):
         flip_trajectories: bool = False
     ) -> None:
 
-        DiffmapDataset.__init__(self, root_dir, image_transforms, trgt_key, ctxt_key, split)
+        DiffmapDataset.__init__(self, root_dir, image_transforms, split)
         IterableDataset.__init__(self)
 
         self.root_dir = Path(root_dir)
-        self.trgt_key = trgt_key
-        self.ctxt_key = ctxt_key
         self.split = split
         self.stride = stride
         self.n_future = n_future
@@ -199,8 +195,8 @@ class CO3DDiffmapDataset(DiffmapDataset, Dataset):
         ctxt_ims = torch.stack([self._get_im(p) for p in prev_im_paths], dim=0)
         trgt_ims = torch.stack([self._get_im(p) for p in future_im_paths], dim=0)
         data.update({
-            self.ctxt_key: ctxt_ims,
-            self.trgt_key: trgt_ims,
+            'ctxt_rgb': ctxt_ims,
+            'trgt_rgb': trgt_ims,
             'indices': indices
             }
         )
@@ -209,10 +205,10 @@ class CO3DDiffmapDataset(DiffmapDataset, Dataset):
         flows_fwd, flow_fwd_masks = self._get_flow(fwd_flow_paths, fwd_flow_mask_paths)
         flows_bwd, flow_bwd_masks = self._get_flow(bwd_flow_paths, bwd_flow_mask_paths)
         data.update({
-            'optical_flow': flows_fwd,
-            'optical_flow_bwd': flows_bwd,
-            'optical_flow_mask': flow_fwd_masks,
-            'optical_flow_bwd_mask': flow_bwd_masks
+            'fwd_flow': flows_fwd,
+            'bwd_flow': flows_bwd,
+            'mask_fwd_flow': flow_fwd_masks,
+            'mask_bwd_flow': flow_bwd_masks
             }
         )
 

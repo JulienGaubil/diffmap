@@ -1,57 +1,56 @@
 # Default params used.
 n_future: 1
+n_ctxt: 1
 channels_m: 3
 
 modalities_in:
-  - target: ldm.misc.modalities.Modality
+  - target: ldm.misc.modalities.RGBModalities
     params:
-      name: trgt
-      modality: rgb
-      multiplicity: ${n_future}
-      channels_m: ${channels_m} 
-      denoised: True
+      trgt_cfg:
+        multiplicity: ${n_future}
+        channels_m: ${channels_m} 
+        denoised: True
 
-  - target: ldm.misc.modalities.Modality
+  - target: ldm.misc.modalities.FlowModalities
     params:
-      name: optical_flow
-      modality: flow
-      multiplicity: ${n_future}
-      channels_m: ${channels_m} 
-      denoised: True
+      forward_cfg:
+        multiplicity: ${n_future}
+        channels_m: ${channels_m} 
+        denoised: True
+
 
 modalities_out:
-  - target: ldm.misc.modalities.Modality
+  - target: ldm.misc.modalities.RGBModalities
     params:
-      name: trgt
-      modality: rgb
-      multiplicity: ${n_future}
-      channels_m: ${channels_m} 
-      denoised: True
+      trgt_cfg:
+        multiplicity: ${n_future}
+        channels_m: ${channels_m} 
+        denoised: True
 
-  - target: ldm.misc.modalities.Modality
+  - target: ldm.misc.modalities.FlowModalities
     params:
-      name: optical_flow
-      modality: flow
-      multiplicity: ${n_future}
-      channels_m: ${channels_m} 
-      denoised: True
+      forward_cfg:
+        multiplicity: ${n_future}
+        channels_m: ${channels_m} 
+        denoised: True
 
-  - target: ldm.misc.modalities.Modality
+  - target: ldm.misc.modalities.DepthModalities
     params:
-      name: depth_ctxt
-      modality: depth
-      multiplicity: 1
-      channels_m: ${channels_m} 
-      denoised: False
+      ctxt_cfg:
+        multiplicity: ${n_ctxt}
+        channels_m: ${channels_m} 
+        denoised: False
+      
+      trgt_cfg:
+        multiplicity: ${n_future}
+        channels_m: ${channels_m} 
+        denoised: False
 
-  - target: ldm.misc.modalities.Modality
+
+modalities_cond:
+  - target: ldm.misc.modalities.RGBModalities
     params:
-      name: depth_trgt
-      modality: depth
-      multiplicity: ${n_future}
-      channels_m: ${channels_m} 
-      denoised: False
-  
-  
-  
-  
+      ctxt_cfg:
+        multiplicity: ${n_ctxt}
+        channels_m: ${channels_m}
+        denoised: False

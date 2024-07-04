@@ -10,7 +10,7 @@ val_scenes: null
 
 model:
   params:
-    image_key: optical_flow #key of the target signal in the dataset samples dict
+    image_key: fwd_flow #key of the target signal in the dataset samples dict
     ckpt_path: "models/first_stage_models/kl-f8/model.ckpt"
 
 data:

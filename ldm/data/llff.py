@@ -20,8 +20,6 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
     def __init__(self,
         root_dir: str,
         image_transforms: list = [],
-        trgt_key: str = 'trgt',
-        ctxt_key: str = 'ctxt',
         split: str = 'train',
         scenes: list | ListConfig | str | int | None = None,
         val_scenes: list | ListConfig | str | int | None = None,
@@ -31,12 +29,10 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
 
         assert val_scenes is not None or split != 'validation'
 
-        DiffmapDataset.__init__(self, root_dir, image_transforms, trgt_key, ctxt_key, split)
+        DiffmapDataset.__init__(self, root_dir, image_transforms, split)
         IterableDataset.__init__(self)
 
         self.root_dir = Path(root_dir)
-        self.trgt_key = trgt_key
-        self.ctxt_key = ctxt_key
         self.split = split
         self.stride = stride
         self.n_future = n_future
@@ -168,23 +164,23 @@ class LLFFDiffmapDataset(DiffmapDataset, Dataset):
         # Load target, context frames.
         data = {}
         data['indices'] = torch.tensor([index, index + self.stride])
-        data[self.ctxt_key] = self._get_im(prev_im_path)
-        data[self.trgt_key] = self._get_im(curr_im_path)
+        data['ctxt_rgb'] = self._get_im(prev_im_path)
+        data['trgt_rgb'] = self._get_im(curr_im_path)
 
         # Load flow
         flow_fwd, flow_fwd_mask = self._get_flow(fwd_flow_path, fwd_flow_mask_path)
         flow_bwd, flow_bwd_mask = self._get_flow(bwd_flow_path, bwd_flow_mask_path)
 
         data.update({
-            'optical_flow': flow_fwd,
-            'optical_flow_bwd': flow_bwd,
-            'optical_flow_mask': flow_fwd_mask,
-            'optical_flow_bwd_mask': flow_bwd_mask
+            'fwd_flow': flow_fwd,
+            'bwd_flow': flow_bwd,
+            'fwd_flow_mask': flow_fwd_mask,
+            'bwd_flow_mask': flow_bwd_mask
             }
         )
         # # Load depth
-        # data['depth_trgt'] = self._load_depth(curr_idx)
-        # data['depth_ctxt'] = self._load_depth(prev_idx)
+        # data['ctxt_depth'] = self._load_depth(prev_idx)
+        # data['trgt_depth'] = self._load_depth(curr_idx)
 
         return data
 

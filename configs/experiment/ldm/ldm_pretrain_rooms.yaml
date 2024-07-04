@@ -27,7 +27,7 @@ model:
 
     first_stage_flow_config:
       params:
-        image_key: optical_flow #key of the target signal in the dataset samples dict
+        image_key: fwd_flow #key of the target signal in the dataset samples dict
         ckpt_path: /home/jgaubil/projects/diffmap/codes/stable-diffmap/logs/dev/auto_encoder/2024-05-06T12-53-39_pixart_vae_rooms/checkpoints/last.ckpt
     
 

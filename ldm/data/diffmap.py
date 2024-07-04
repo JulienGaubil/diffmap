@@ -9,7 +9,7 @@ from jaxtyping import Float
 from torch import Tensor
 from einops import rearrange
 from torchvision import transforms
-from omegaconf import ListConfig
+from omegaconf import ListConfig, DictConfig
 
 from ldm.misc.util import instantiate_from_config
 from .utils.tforms import CenterCropFlow
@@ -20,8 +20,6 @@ class DiffmapDataset(ABC):
     Abstract Diffmap dataset class.
     """
     root_dir: Path
-    trgt_key: str
-    ctxt_key: str
     split: str
 
     tform_im: transforms.transforms.Compose
@@ -32,15 +30,11 @@ class DiffmapDataset(ABC):
         self,
         root_dir: str,
         image_transforms: list,
-        trgt_key: str, # TODO - do it properly, target signal key in batch
-        ctxt_key: str, # TODO - do it properly, conditional signal key in batch
         split: str,
     ) -> None:
 
         # Common attributes.
         self.root_dir = Path(root_dir)
-        self.trgt_key = trgt_key
-        self.ctxt_key = ctxt_key
         self.split = split
 
         # Define transforms.

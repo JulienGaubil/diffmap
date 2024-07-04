@@ -28,7 +28,7 @@ def worker_init_fn(_):
 
 def collate_fn_diffmap(batch: List) -> dict:
     # Keys to handle manually.
-    ignored_keys = ['camera_ctxt', 'camera_trgt']
+    ignored_keys = ['ctxt_camera', 'trgt_camera']
 
     # Default batch preprocessing
     collate_batch = [{key: value for key, value in sample.items() if key not in ignored_keys} for sample in batch]

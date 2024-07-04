@@ -4,6 +4,7 @@ import torch
 import torchvision
 import pytorch_lightning as pl
 
+from contextlib import nullcontext
 from pathlib import Path
 from jaxtyping import Float
 from torch import Tensor
@@ -14,6 +15,7 @@ from flow_vis_torch import flow_to_color
 from einops import rearrange
 
 from ldm.misc.util import rank_zero_print
+from ldm.misc.modalities import Modality
 from ldm.visualization import color_map_depth, apply_color_map_to_image, filter_depth, warp_image_flow, overlay_images
 
 
@@ -240,8 +242,8 @@ class ImageLoggerDiffmap(ImageLogger):
 
     @rank_zero_only
     def _testtube(self, pl_module, images, batch_idx, split, nrow):
-        """Create grid visualization and log for tensorboard.
-        """
+        '''Create grid visualization and log for tensorboard.
+        '''
         for k in images:
             images_viz = images[k]
             nrow_ = nrow if images_viz.size(0) // nrow > 1 else images_viz.size(0)
@@ -253,8 +255,8 @@ class ImageLoggerDiffmap(ImageLogger):
 
     @rank_zero_only
     def log_local(self, save_dir, split, images, global_step, current_epoch, batch_idx, nrow):
-        """Prepare and save local logs.
-        """
+        '''Prepare and save local logs.
+        '''
         root = os.path.join(save_dir, "images", split)
 
         # Log every visualization for the modality.
@@ -277,164 +279,423 @@ class ImageLoggerDiffmap(ImageLogger):
             os.makedirs(os.path.split(path)[0], exist_ok=True)
             Image.fromarray(grid).save(path)
 
-    def prepare_images(self, images: Float[Tensor, "batch frame channel=3 height width"]) -> Float[Tensor, "(batch frame) channel=3 height width"]:
-        """Subsample and copy tensors to cpu.
-        """
+    def prepare_images(self, images: Float[Tensor, "sample frame channel=3 height width"]) -> Float[Tensor, "(sample frame) channel=3 height width"]:
+        '''Subsample and copy tensors to cpu.
+        '''
         N = min(images.shape[0], self.max_images)
         images = images[:N].clone()
         images = rearrange(images, 'b f ... -> (b f) ...')
         if isinstance(images, torch.Tensor):
             images = images.detach().cpu()
         return images
-
-    def make_intermediates_figure(
-        self,
-        images: Float[Tensor, "sample viz=4 channel=3 height width"],
-        modality: str
-    ) -> Float[Tensor, "sample rgb=3 height_viz width"]:
-        """Prepare figure for intermediate diffusion step visualization before passing to grid.
-        """
-        intermediate_samples = list()
-
-        # Create a stacked visualization for every sample.
-        for i in range(images.size(0)):
-            if modality == 'optical_flow':
-                flow_vizs_sample = flow_to_color(images[i,:,:2,:,:]) / 255 # gt - noised gt - denoising output - denoised gt
-            else:
-                flow_vizs_sample = images[i]
-                # Concatenate visualization for a given sample.
-            flow_vizs_sample = torch.cat([flow_vizs_sample[j] for j in range(flow_vizs_sample.size(0))], dim=1)
-            intermediate_samples.append(flow_vizs_sample)
-        
-        # Stacks individual visualizations in batch.
-        intermediate_figure = torch.stack(intermediate_samples, dim=0)
-        return intermediate_figure
     
-    def make_warped_figure(
-      self,
-      fwd_flows: Float[Tensor, "sample vu=2 height width"],
-      src_images: Float[Tensor, "sample 3 height width"],
-      trgt_images: Float[Tensor, "sample 3 height width"]
-    ) -> Float[Tensor, "sample 3 height width"]:
-        """Warp source images with optical flow and overlay with trgt image.
-        """
-        warped_images_figs = list()
+    # def make_warped_figure(
+    #   self,
+    #   fwd_flows: Float[Tensor, "sample vu=2 height width"],
+    #   src_images: Float[Tensor, "sample 3 height width"],
+    #   trgt_images: Float[Tensor, "sample 3 height width"]
+    # ) -> Float[Tensor, "sample 3 height width"]:
+    #     """Warp source images with optical flow and overlay with trgt image.
+    #     """
+    #     warped_images_figs = list()
 
-        for k in range(fwd_flows.size(0)):
-            warped_image = warp_image_flow(
-                src_image=src_images[k],
-                flow=fwd_flows[k]
-            )
-            overlayed_image = overlay_images(
-                im1=trgt_images[k],
-                im2=warped_image,
-                alpha_im1=0.5
-            ) # (c h w), pixel range [0,1]
-            warped_images_figs.append(overlayed_image)
+    #     for k in range(fwd_flows.size(0)):
+    #         warped_image = warp_image_flow(
+    #             src_image=src_images[k],
+    #             flow=fwd_flows[k]
+    #         )
+    #         overlayed_image = overlay_images(
+    #             im1=trgt_images[k],
+    #             im2=warped_image,
+    #             alpha_im1=0.5
+    #         ) # (c h w), pixel range [0,1]
+    #         warped_images_figs.append(overlayed_image)
 
-        warped_images_figs = torch.stack(warped_images_figs, dim=0)
+    #     warped_images_figs = torch.stack(warped_images_figs, dim=0)
 
-        return warped_images_figs
-
-    def prepare_log_depth(
-        self,
-        batch: dict,
-        log_dict: dict[str, Float[Tensor, "batch frame channel height width"]],
-        modality: str
-    ) -> dict[str, Float[Tensor, "(batch frame) 3 height width"]]:
-        logs_depth = dict()
-
-        # Make figures for depth samples and inputs visualization.
-        for key, visualization in log_dict.items():
-            # Subsample and copy tensors.
-            if len(visualization.size()) == 5 and visualization.size(2) == 3:
-                visualization = visualization.mean(2)
-            images = self.prepare_images(visualization)
-            
-            # TODO - do it properly, remove correspondence weights from here
-            # Apply colorization.
-            if key == 'correspondence_weights':
-                images = apply_color_map_to_image(images, "gray")
-            else:
-                images, _ = filter_depth(images)
-                images = color_map_depth(images)
-
-            logs_depth[key] = images
-        
-        return logs_depth
-
-    def prepare_log_flow(
-        self,
-        log_dict: dict[str, Float[Tensor, "batch frame channel height width"]],
-        src_images,
-        trgt_images,
-        modality: str
-    ) -> dict[str, Float[Tensor, "(batch frame) 3 height width"]]:
-        logs_flow = dict()
-        
-        # Make figures for flow samples and inputs visualization.
-        for key, visualization in log_dict.items():
-            # Subsample and copy tensors.
-            if key.startswith('intermediates_'):
-                b, v, f, v, h, w = visualization.shape
-                visualization = rearrange(visualization, 'b v f ... -> b f v ...')
-            images = self.prepare_images(visualization)
-
-            # if key == "samples":
-            #     fwd_flows = images[:,:2,:,:]
-            #     src_images = (self.prepare_images(src_images) + 1.0) / 2.0
-            #     trgt_images = (self.prepare_images(trgt_images) + 1.0) / 2.0
-            #     warped_images = self.make_warped_figure(
-            #         src_images=src_images,
-            #         trgt_images=trgt_images,
-            #         fwd_flows=fwd_flows
-            #     )
-            #     logs_flow["warped_fwd"] = warped_images
-
-            # Apply colorization.
-            if key.startswith('intermediates_'):
-                images = rearrange(images, '(b f) v c h w -> b f v c h w', f=f)
-                images = images[:,0,...]
-                images = self.make_intermediates_figure(images, modality=modality)
-            else:
-                images = flow_to_color(images[:,:2,:,:]) / 255
-            
-            logs_flow[key] = images
-
-        return logs_flow
+    #     return warped_images_figs
 
     def prepare_log_rgb(
         self,
+        x: Float[Tensor, "sample frame 3 height width"],
+    ) -> Float[Tensor, "* 3 height width"]:
+        
+        images = self.prepare_images(x)
+
+        # Make RGB figures.
+        if self.clamp:
+            images = torch.clamp(images, -1., 1.)
+        images = (images + 1.0) / 2.0 #  [-1,1] -> [0,1].
+
+        return images
+
+    def prepare_log_flow(
+        self,
+        x: Float[Tensor, "sample frame channel height width"],
+    ) -> Float[Tensor, "(sample frame) 3 height width"]:
+
+        images = self.prepare_images(x)
+        images = flow_to_color(images[:,:2,:,:]) / 255
+
+        return images
+
+    def prepare_log_depth(
+        self,
+        x: Float[Tensor, "sample frame channel height width"],
+        sample: bool = False
+    ) -> Float[Tensor, "(sample frame) 3 height width"]:
+        if len(x.size()) == 5 and x.size(2) == 3:
+                x = x.mean(2)
+        if sample: #exponential mapping for depth samples
+            x = (x / 1000).exp() + 0.01
+        images = self.prepare_images(x)
+        
+        # Apply colorization.
+        images, _ = filter_depth(images)
+        images = color_map_depth(images)
+        
+        return images
+    
+    def prepare_log_correspondence_weight(
+        self,
+        x: Float[Tensor, "sample pair height width"]
+    ) -> Float[Tensor, "(sample frame) 3 height width"]:
+        images = self.prepare_images(x)
+        images = apply_color_map_to_image(images, "gray")
+
+        return images
+
+    def prepare_visualization(
+        self,
+        x_m: Float[Tensor, "sample ... height width"],
+        modality: Modality,
+        sample: bool = False
+    ) -> Float[Tensor, "* 3 height width"]:
+        if modality.modality == 'rgb':
+            images = self.prepare_log_rgb(x_m)
+        elif modality.modality == 'depth':
+            images = self.prepare_log_depth(x_m, sample)
+        elif modality.modality == 'flow':
+            images = self.prepare_log_flow(x_m)
+        elif modality.modality == 'weight':
+            images = self.prepare_log_correspondence_weight(x_m)
+        else:
+            raise Exception("Non-recognised modality - should be 'depth', 'rgb' or 'flow'")
+
+        return images
+
+    def log_visualization(
+        self,
+        pl_module: pl.LightningModule,
+        visualization: Float[Tensor, "(sample frame) 3 height width"],
+        modality: Modality,
+        logger,
+        split: str,
+        batch_idx: int,
+        label_visualization: str,
+        nrow: int | None = None
+    ) -> None:
+        if nrow is None:
+            if pl_module.n_future > 1:
+                nrow = pl_module.n_future 
+            else:
+                nrow = min(self.log_images_kwargs['N'], self.max_images)
+        
+        label_log_folder = '_'.join([split, modality._id])
+        log_dict_modality = {label_visualization: visualization}
+
+        # Save visualizations locally.
+        self.log_local(
+            pl_module.logger.save_dir,
+            label_log_folder,
+            log_dict_modality,
+            pl_module.global_step,
+            pl_module.current_epoch,
+            batch_idx,
+            nrow
+        )
+        # Save visualizations with tensorboard.
+        logger_log_images = self.logger_log_images.get(logger, lambda *args, **kwargs: None)
+        logger_log_images(pl_module, log_dict_modality, pl_module.global_step, label_log_folder, nrow)
+
+    @torch.no_grad()
+    def log_intermediates(
+        self,
+        pl_module: pl.LightningModule,
+        x: Float[Tensor, "sample noisy_channel height width"],
+        c: Float[Tensor, "sample cond_channel height width"],
+        logger,
+        split: str,
+        batch_idx: int
+    ) -> None:
+        '''Sample and log intermediate denoising step visualization.
+        '''
+        # Sample intermediate diffusion step.
+        t_intermediate = pl_module.num_timesteps // 2
+        x_intermediate, samples_intermediate = pl_module.sample_intermediate(x_start=x, cond=c, t=t_intermediate)
+
+        # Prepare every intermediate tensor.
+        visualization_all = {modality._id: list() for modality in pl_module.modalities_out.denoised_modalities}
+        for intermediate_tensor in [x, x_intermediate, samples_intermediate.x_denoised, samples_intermediate.x_recon]: # visualized tensors
+            intermediate_samples = rearrange(intermediate_tensor, 'b (f c) h w -> b f c h w', c=pl_module.channels_m)
+            intermediate_samples = pl_module.modalities_out.split_modalities_multiplicity(intermediate_samples, modality_ids=pl_module.modalities_out.ids_denoised)
+            
+            # Prepare intermediate visualization for every modality.
+            for modality in pl_module.modalities_out.denoised_modalities:
+                B = intermediate_samples[modality._id].size(0)
+                visualization_intermediate = self.prepare_visualization(intermediate_samples[modality._id], modality)
+                visualization_intermediate = rearrange(visualization_intermediate, '(b f) c h w -> b f c h w', b=B)
+                visualization_all[modality._id].append(visualization_intermediate[:,0]) # (sample, channel, height, width) subsample to select only first future frame intermediate visualization
+
+        # Log all intermediate visualizations for every modality.
+        for modality in pl_module.modalities_out.denoised_modalities:
+            visualization = torch.stack(visualization_all[modality._id], dim=0) # (v b c h w)
+            visualization = rearrange(visualization, 'v b c h w -> (v b) c h w')
+            self.log_visualization(
+                pl_module,
+                visualization,
+                modality,
+                logger,
+                split,
+                batch_idx,
+                f'intermediates_{t_intermediate}',
+                nrow=B
+            )
+
+    def log_inputs(
+        self,
+        pl_module: pl.LightningModule,
         batch: dict,
-        log_dict: dict[str, Float[Tensor, "batch frame 3 height width"]],
-        modality: str
-    ) -> dict[str, Float[Tensor, "* 3 height width"]]:
-        logs_rgb = dict()
+        logger,
+        split: str,
+        batch_idx: int,
+        n_row: int = 4,
+        N: int = 8,
+        plot_diffusion_rows: bool = False,
+        **kwargs
+    ) -> None:
+        '''Log model inputs.
+        '''
+        # Get model inputs
+        x, c, xc = pl_module.get_input(
+            batch,
+            force_c_encode=True,
+            return_original_cond=True,
+            bs=N
+        )
 
-        # Create figures for RGB samples and inputs visualization.
-        for key, visualization in log_dict.items():
-            # Prepare image tensors from [-1,1] to [0,1].
-            if key.startswith('intermediates_'):
-                b, v, f, v, h, w = visualization.shape
-                visualization = rearrange(visualization, 'b v f ... -> b f v ...')
-            images = self.prepare_images(visualization)
+        # Split input and conditioning modalities.
+        x_log = rearrange(x, 'b (f c) h w -> b f c h w', c=pl_module.channels_m)
+        xc_log = rearrange(xc, 'b (f c) h w -> b f c h w', c=pl_module.channels_m)
+        x_split = pl_module.modalities_in.split_modalities_multiplicity(x_log)
+        xc_split = pl_module.modalities_cond.split_modalities_multiplicity(xc_log)
+        n_row = min(x.shape[0], n_row)
 
-            # Make RGB figures.
-            if self.clamp:
-                images = torch.clamp(images, -1., 1.)
-            images = (images + 1.0) / 2.0 #  [-1,1] -> [0,1].
-            if key.startswith('intermediates_'):
-                images = rearrange(images, '(b f) v c h w -> b f v c h w', f=f)
-                images = images[:,0,...]
-                images = self.make_intermediates_figure(images, modality=modality)
+        # Prepare and log conditioning visualizations.
+        for modality in pl_module.modalities_cond:
+            if not modality in pl_module.modalities_in:
+                x_m = xc_split[modality._id]
+                visualization = self.prepare_visualization(x_m, modality)
+                self.log_visualization(
+                    pl_module,
+                    visualization,
+                    modality,
+                    logger,
+                    split,
+                    batch_idx,
+                    'conditioning'
+                )
 
-            logs_rgb[key] = images
+        # Log visualizations.
+        for modality in pl_module.modalities_in:
 
-        return logs_rgb
+            # log[modality]["inputs"] = x_split[modality._id]
+            x_m = x_split[modality._id]
+            visualization = self.prepare_visualization(x_m, modality)
+            self.log_visualization(
+                pl_module,
+                visualization,
+                modality,
+                logger,
+                split,
+                batch_idx,
+                'input'
+            )
 
-    def log_img(self, pl_module, batch, batch_idx, split="train"):
-        """Sample the diffusion model with a batch and log the results.
+            if plot_diffusion_rows: #computes steps of forward process and logs it
+                raise NotImplementedError # handle n > 1 future frames
+                # # get diffusion row
+                # diffusion_row = list()
+                # x_start = x[modality._id][:n_row]
+                # for t in range(pl_module.num_timesteps):
+                #     if t % pl_module.log_every_t == 0 or t == pl_module.num_timesteps - 1:
+                #         t = repeat(torch.tensor([t]), '1 -> b', b=n_row)
+                #         t = t.to(pl_module.device).long()
+                #         noise = torch.randn_like(x_start)
+                #         x_noisy = pl_module.q_sample(x_start=x_start, t=t, noise=noise)
+                #         diffusion_row.append(x_noisy)
+
+                # diffusion_row = torch.stack(diffusion_row)  # n_log_step, n_row, C, H, W
+                # diffusion_grid = rearrange(diffusion_row, 'n b c h w -> b n c h w')
+                # diffusion_grid = rearrange(diffusion_grid, 'b n c h w -> (b n) c h w')
+                # diffusion_grid = make_grid(diffusion_grid, nrow=diffusion_row.shape[0])
+                # log[modality]["diffusion_row"] = diffusion_grid
+    
+    @torch.no_grad()
+    def log_samples(
+        self,
+        pl_module: pl.LightningModule,
+        batch: dict,
+        logger,
+        split: str,
+        batch_idx: int,
+        sample: bool = True,
+        N: int = 8,
+        n_row: int = 4,
+        use_ema_scope: bool = True,
+        use_ddim: bool = True,
+        ddim_steps: int = 200,
+        ddim_eta: float = 1.,
+        plot_denoise_rows: bool = False,
+        plot_progressive_rows: bool = False,
+        unconditional_guidance_scale: float = 1.,
+        unconditional_guidance_label = None,
+        **kwargs
+    ) -> None:
+        '''Sample model and log samples.
+        '''
+        # Get model inputs
+        x, c, xc = pl_module.get_input(
+            batch,
+            force_c_encode=True,
+            return_original_cond=True,
+            bs=N
+        )
+
+        ema_scope = pl_module.ema_scope if use_ema_scope else nullcontext
+        use_ddim = ddim_steps is not None and pl_module.num_timesteps > 1
+
+        N = min(x.shape[0], N)
+        n_row = min(x.shape[0], n_row)
+
+        # Sample diffusion model and log samples.
+        if sample:
+            # Sampling.
+            with ema_scope("Sampling"):
+                samples, x_denoise_row = pl_module.sample_log(
+                    cond=c,
+                    batch_size=N,
+                    ddim=use_ddim,
+                    ddim_steps=ddim_steps,
+                    eta=ddim_eta
+                )
+            
+            weights = samples.weights
+            samples_diffusion = rearrange(samples.x_denoised, 'b (f c) h w -> b f c h w', c=pl_module.channels_m)
+            samples_prediction = rearrange(samples.x_predicted, 'b (f c) h w -> b f c h w', c=pl_module.channels_m)
+            samples_diffusion = pl_module.modalities_out.split_modalities_multiplicity(samples_diffusion, modality_ids=pl_module.modalities_out.ids_denoised)
+            samples_prediction = pl_module.modalities_out.split_modalities_multiplicity(samples_prediction, modality_ids=pl_module.modalities_out.ids_clean)
+            samples = dict(samples_diffusion, **samples_prediction)
+
+            # Log samples and gt.
+            for modality in pl_module.modalities_out:
+                sample_m = samples[modality._id]
+                visualization = self.prepare_visualization(sample_m, modality, sample=True)
+                self.log_visualization(
+                    pl_module,
+                    visualization,
+                    modality,
+                    logger,
+                    split,
+                    batch_idx,
+                    'sample'
+                )
+
+                if modality._id in batch.keys() and modality not in pl_module.modalities_in: #gt
+                    x_m = pl_module.get_input_modality(batch, modality._id)[:N]
+                    x_m = rearrange(x_m, 'b (f c) h w -> b f c h w', c=modality.channels_m)
+                    visualization = self.prepare_visualization(x_m, modality)
+                    self.log_visualization(
+                        pl_module,
+                        visualization,
+                        modality,
+                        logger,
+                        split,
+                        batch_idx,
+                        'gt'
+                    )
+
+            # Log correspondence weight samples.
+            if weights is not None:
+                modality_weight = Modality(name='correspondence', modality='weight', multiplicity=weights.size(1), channels_m=0, denoised=False)
+                visualization = self.prepare_visualization(weights, modality_weight)
+                self.log_visualization(
+                    pl_module,
+                    visualization,
+                    modality_weight,
+                    logger,
+                    split,
+                    batch_idx,
+                    'sample'
+                )
+
+            # Visualize intermediate diffusion step.
+            if pl_module.modalities_out.n_noisy_channels > 0:
+                self.log_intermediates(pl_module, x, c, logger, split, batch_idx)
+                
+            
+            # Visualize intermediate diffusion rows.
+            if plot_denoise_rows and pl_module.channels > 0:
+                raise NotImplementedError
+                # for modality in pl_module.modalitie_out:
+                #     denoise_grid = pl_module._get_denoise_row_from_list(x_denoise_row, modality=modality._id) # TODO - adapt to every modality
+                #     log[modality._id]["denoise_row"] = denoise_grid
+
+        # Sampling with classifier-free guidance.
+        if unconditional_guidance_scale > 1.0 and pl_module.model.conditioning_key not in ["concat", "hybrid"]:
+            raise NotImplementedError
+            # uc = pl_module.get_unconditional_conditioning(N, unconditional_guidance_label)
+            # # uc = torch.zeros_like(c)
+            # with ema_scope("Sampling with classifier-free guidance"):
+            #     samples_cfg, _ = pl_module.sample_log(cond=c, batch_size=N, ddim=use_ddim,
+            #                                     ddim_steps=ddim_steps, eta=ddim_eta,
+            #                                     unconditional_guidance_scale=unconditional_guidance_scale,
+            #                                     unconditional_conditioning=uc,
+            #                     )
+            #     samples_cfg = rearrange(samples_cfg.x_noisy, 'b (f c) h w -> b f c h w', c=pl_module.channels_m)
+            #     samples_cfg = pl_module.modalities_out.split_modalities_multiplicity(samples_cfg, modality_ids=pl_module.modalities_out.ids_denoised)
+
+            # # Log classifier-free guidance samples.
+            # x_samples_cfg = samples_cfg[id_m]
+            # log[id_m][f"samples_cfg_scale_{unconditional_guidance_scale:.2f}"] = x_samples_cfg
+
+        # Plotting progressive denoising row.
+        if plot_progressive_rows:
+            raise NotImplementedError
+            # with ema_scope("Plotting Progressives"):
+            #     _, progressives = pl_module.progressive_denoising(c,
+            #                                                 shape=(pl_module.channels, pl_module.image_size, pl_module.image_size),
+            #                                                 batch_size=N)
+                
+            #     for k in range(len(progressives)):
+            #         s = rearrange(s, 'b (f c) h w -> b f c h w', c=pl_module.channels_m)
+            #         progressives[k] = pl_module.modalities_out.split_modalities_multiplicity(s, modality_ids=pl_module.modalities_out.ids_denoised)
+
+            # progressives_m = [s[id_m] for s in progressives]
+            # prog_row = pl_module._get_denoise_row_from_list(progressives_m, desc="Progressive Generation", modality=id_m)
+            # log[id_m][f"progressive_row"] = prog_row
+
+    @torch.no_grad()
+    def log_img(
+        self,
+        pl_module: pl.LightningModule,
+        batch: dict,
+        batch_idx: int,
+        split: str = "train",
+    ) -> dict:
+        """Sample diffusion model and create visualizations for logging.
         """
+        # Check if log should be performed.
         check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
         if self.log_all_val and split == "val":
             should_log = True
@@ -443,50 +704,18 @@ class ImageLoggerDiffmap(ImageLogger):
             should_log = self.check_frequency(check_idx)
 
         # Sample model with batch and log results.
-        if (should_log and (check_idx % self.batch_freq == 0) and
-                hasattr(pl_module, "log_images") and
-                callable(pl_module.log_images) and
-                self.max_images > 0) or split == "val":
+        if (should_log and (check_idx % self.batch_freq == 0) and hasattr(pl_module, "log_images") and
+            callable(pl_module.log_images) and self.max_images > 0) or split == "val":
+            
             logger = type(pl_module.logger)
-
-            # Sample model.
             is_train = pl_module.training
             if is_train:
                 pl_module.eval()
-            with torch.no_grad():
-                log_dict = pl_module.log_images(batch, split=split, **self.log_images_kwargs)
 
-            # Prepare visualization for every modality.
-            logs = dict()
-            for modality, log_dict_modality in log_dict.items():
-                if "depth" in modality:
-                    logs[modality] = self.prepare_log_depth(batch, log_dict_modality, modality)
-                elif modality == "optical_flow":
-                    logs[modality] = self.prepare_log_flow(
-                        log_dict=log_dict_modality,
-                        src_images=rearrange(batch[pl_module.cond_stage_key], 'b f h w c -> b f c h w'),
-                        trgt_images=rearrange(batch[pl_module.first_stage_key], 'b f h w c -> b f c h w'),
-                        modality=modality
-                    )
-                else:
-                    logs[modality] = self.prepare_log_rgb(batch, log_dict_modality, modality)
+            # Log model inputs and samples.
+            self.log_inputs(pl_module, batch, logger, split, batch_idx, **self.log_images_kwargs)
+            self.log_samples(pl_module, batch, logger, split, batch_idx, **self.log_images_kwargs)
 
-            # Log every modality.
-            for modality, log_dict_modality in logs.items():
-                if pl_module.n_future > 1:
-                    nrow = pl_module.n_future 
-                else:
-                    nrow = min(self.log_images_kwargs['N'], self.max_images)
-
-                split_modality = split+f"_{modality}"
-
-                # Locally save visualizations in log folder.
-                self.log_local(pl_module.logger.save_dir, split_modality, log_dict_modality,
-                            pl_module.global_step, pl_module.current_epoch, batch_idx, nrow)
-                # Save visualizations for tensorboard.
-                logger_log_images = self.logger_log_images.get(logger, lambda *args, **kwargs: None)
-                logger_log_images(pl_module, log_dict_modality, pl_module.global_step, split_modality, nrow)
-            
             if is_train:
                 pl_module.train()
 
