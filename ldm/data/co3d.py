@@ -23,7 +23,8 @@ class CO3DDiffmapDataset(DiffmapDataset, Dataset):
         categories: list | ListConfig | str | None = None,
         val_scenes: list | ListConfig | str | int | None = None,
         stride: int = 1,
-        n_future = 1,
+        n_future: int = 1,
+        n_ctxt: int = 1,
         flip_trajectories: bool = False
     ) -> None:
 
@@ -34,6 +35,7 @@ class CO3DDiffmapDataset(DiffmapDataset, Dataset):
         self.split = split
         self.stride = stride
         self.n_future = n_future
+        self.n_ctxt = n_ctxt
         self.flip_trajectories = flip_trajectories
 
         # Load categories.
@@ -92,26 +94,12 @@ class CO3DDiffmapDataset(DiffmapDataset, Dataset):
                 raise Exception(f'Stride {self.stride} not valid, should be 1 or 3.')
             
             # Define dataset pairs.
-            self.frame_pair_paths += [
-                ([Path(paths_frames[idx])], [Path(p) for p in paths_frames[idx + self.stride : idx + self.n_future * self.stride + 1 : self.stride]])
-                for idx in range(len(paths_frames) - (self.n_future * self.stride))
-            ]
-            self.flow_fwd_paths += [
-                [Path(p) for p in paths_flow_fwd[idx : idx + self.n_future * self.stride : stride]]
-                for idx in range(len(paths_frames) - (self.n_future * self.stride))
-            ]
-            self.flow_bwd_paths += [
-                [Path(p) for p in paths_flow_bwd[idx : idx + self.n_future * self.stride : stride]]
-                for idx in range(len(paths_frames) - (self.n_future * self.stride))
-            ]
-            self.flow_fwd_mask_paths += [
-                [Path(p) for p in paths_flow_fwd_mask[idx : idx + self.n_future * self.stride : stride]]
-                for idx in range(len(paths_frames) - (self.n_future * self.stride))
-            ]
-            self.flow_bwd_mask_paths += [
-                [Path(p) for p in paths_flow_bwd_mask[idx : idx + self.n_future * self.stride : stride]]
-                for idx in range(len(paths_frames) - (self.n_future * self.stride))
-            ]
+            for idx in range(len(paths_frames) - ((self.n_ctxt + self.n_future - 1) * self.stride)):
+                self.frame_pair_paths.append([Path(p) for p in paths_frames[idx : idx + (self.n_ctxt + self.n_future) * self.stride : self.stride]])
+                self.flow_fwd_paths.append([Path(p) for p in paths_flow_fwd[idx : idx + (self.n_ctxt - 1 + self.n_future) * self.stride : stride]])
+                self.flow_bwd_paths.append([Path(p) for p in paths_flow_bwd[idx : idx + (self.n_ctxt - 1 + self.n_future) * self.stride : stride]])
+                self.flow_fwd_mask_paths.append([Path(p) for p in paths_flow_fwd_mask[idx : idx + (self.n_ctxt - 1 + self.n_future) * self.stride : stride]])
+                self.flow_bwd_mask_paths.append([Path(p) for p in paths_flow_bwd_mask[idx : idx + (self.n_ctxt - 1 + self.n_future) * self.stride : stride]])
 
             assert len(self.frame_pair_paths) == len(self.flow_fwd_paths) == len(self.flow_bwd_paths) == len(self.flow_fwd_mask_paths) == len(self.flow_bwd_mask_paths)
 
@@ -169,25 +157,23 @@ class CO3DDiffmapDataset(DiffmapDataset, Dataset):
 
         # Define paths and indices.
         if pair_idx[0] == 0:
-            prev_im_paths, future_im_paths = self.frame_pair_paths[index]
-            fwd_flow_paths = self.flow_fwd_paths[index]
-            bwd_flow_paths = self.flow_bwd_paths[index]
-            fwd_flow_mask_paths = self.flow_fwd_mask_paths[index]
-            bwd_flow_mask_paths = self.flow_bwd_mask_paths[index]
-            indices = torch.arange(index, index + (self.stride * self.n_future) + 1, self.stride)
+            prev_im_paths = self.frame_pair_paths[index][:self.n_ctxt]
+            future_im_paths = self.frame_pair_paths[index][self.n_ctxt:]
+            fwd_flow_paths = self.flow_fwd_paths[index][-self.n_future:]
+            bwd_flow_paths = self.flow_bwd_paths[index][-self.n_future:]
+            fwd_flow_mask_paths = self.flow_fwd_mask_paths[index][-self.n_future:]
+            bwd_flow_mask_paths = self.flow_bwd_mask_paths[index][-self.n_future:]
+            indices = torch.arange(index + (self.n_ctxt - 1) * self.stride, index + (self.n_ctxt + self.n_future) * self.stride, self.stride)
         else:
             # Flipping trajectory
-            fwd_flow_paths = self.flow_bwd_paths[index][::-1]
-            bwd_flow_paths = self.flow_fwd_paths[index][::-1]
-            fwd_flow_mask_paths = self.flow_bwd_mask_paths[index][::-1]
-            bwd_flow_mask_paths = self.flow_fwd_mask_paths[index][::-1]
-
-            # Invert order for future frames.
-            prev_im_paths, next_im_paths = self.frame_pair_paths[index]
-            future_im_paths = next_im_paths[:-1][::-1] + prev_im_paths
-            prev_im_paths = next_im_paths[-1:]
-
-            indices = torch.arange(index, index + (self.stride * self.n_future) + 1, self.stride).flip(dims=[0])
+            prev_im_paths = self.frame_pair_paths[index][::-1][:self.n_ctxt]
+            future_im_paths = self.frame_pair_paths[index][::-1][self.n_ctxt:]
+            fwd_flow_paths = self.flow_bwd_paths[index][::-1][-self.n_future:]
+            bwd_flow_paths = self.flow_fwd_paths[index][::-1][-self.n_future:]
+            fwd_flow_mask_paths = self.flow_bwd_mask_paths[index][::-1][-self.n_future:]
+            bwd_flow_mask_paths = self.flow_fwd_mask_paths[index][::-1][-self.n_future:]
+            
+            indices = torch.arange(index + self.n_future * self.stride, index - 1, -self.stride)
 
         data = {}
 

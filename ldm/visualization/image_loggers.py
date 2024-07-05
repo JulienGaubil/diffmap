@@ -503,7 +503,8 @@ class ImageLoggerDiffmap(ImageLogger):
                     logger,
                     split,
                     batch_idx,
-                    'conditioning'
+                    'conditioning',
+                    nrow=pl_module.n_ctxt
                 )
 
         # Log visualizations.

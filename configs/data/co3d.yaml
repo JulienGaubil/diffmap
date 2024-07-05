@@ -8,6 +8,7 @@ val_scenes: null
 stride: 1
 flip_trajectories: False
 n_future: 1
+n_ctxt: 1
 
 params:
   batch_size: 4
@@ -26,6 +27,7 @@ params:
       categories: ${categories}
       stride: ${stride}
       n_future: ${n_future}
+      n_ctxt: ${n_ctxt}
       flip_trajectories: ${flip_trajectories}
       image_transforms:
       - target: torchvision.transforms.Resize
@@ -47,6 +49,7 @@ params:
       categories: ${categories}
       stride: ${stride}
       n_future: ${n_future}
+      n_ctxt: ${n_ctxt}
       flip_trajectories: ${flip_trajectories}
       image_transforms:
       - target: torchvision.transforms.Resize

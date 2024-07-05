@@ -37,7 +37,7 @@ modalities_out:
   - target: ldm.misc.modalities.DepthModalities
     params:
       ctxt_cfg:
-        multiplicity: ${n_ctxt}
+        multiplicity: 1
         channels_m: ${channels_m} 
         denoised: False
       
