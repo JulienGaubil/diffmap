@@ -9,9 +9,10 @@ The codebase mainly builds on two codebases that implement [Stable Diffusion](ht
 To install and create a Python virtual environment on Linux:
 ```bash
 git clone https://github.com/JulienGaubil/stable-diffmap.git
-cd stable-diffusion
-conda create --name sdiffmap python=3.10
-conda activate sdiffmap
+cd stable-diffmap
+conda create --name diffmap python=3.10
+conda activate diffmap
+pip install -r requirements.txt
 git submodule update --init --recursive
 ```
 
