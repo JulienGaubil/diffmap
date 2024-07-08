@@ -2,6 +2,7 @@
 
 defaults:
   - override /data: co3d
+  - override /diffusion_model/scheduler@model.params.scheduler_config: linear_decrease
 
 # Anchors with references.
 image_size: 64
@@ -37,7 +38,7 @@ lightning:
   callbacks: #configs for image logger
     image_logger:
       params:
-        batch_frequency: 1000 #frequency of logging images (counted in iterations) for train and val
+        batch_frequency: 400 #frequency of logging images (counted in iterations) for train and val
 
   trainer:
     gpus: [0]
