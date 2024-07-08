@@ -1,0 +1,24 @@
+data:
+  name: re10k
+  root_save: datasets/re10k
+  root_raw:  /data/scene-rep/Real-Estate-10k/re10k_pt
+  split: train
+  chunks: null
+  scenes: null
+  image_shape: [128,128]
+  stride: 3
+  max_scenes: 1000
+
+raft:
+  model: models/preprocessing/flow/raft/raft-sintel.pth
+  warm_start: True
+  iters: 32
+  small: False
+  mixed_precision: False
+  alternate_corr: False
+
+hydra:
+  run:
+    dir: .
+  sweep:
+    dir: .

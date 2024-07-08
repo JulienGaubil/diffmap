@@ -1,0 +1,61 @@
+target: ldm.data.datamodule.DataModuleFromConfig
+
+# Default params used.
+image_size: 512
+scenes: null
+val_scenes: null
+stride: 3
+flip_trajectories: False
+n_future: 1
+n_ctxt: 1
+
+params:
+  batch_size: 4
+  num_workers: 4
+  num_val_workers: 0 # Avoid a weird val dataloader issue
+  shuffle_val_dataloader: True
+  collate_fn: ldm.data.datamodule.collate_fn_diffmap
+
+  train: #params train dataset
+    target: ldm.data.re10k.Re10kDiffmapDataset
+    params:
+    # Merge dataset_params with new params fields
+      root_dir: datasets/re10k
+      scenes: ${scenes}
+      val_scenes: ${val_scenes}
+      stride: ${stride}
+      n_future: ${n_future}
+      n_ctxt: ${n_ctxt}
+      flip_trajectories: ${flip_trajectories}
+      image_transforms:
+      - target: torchvision.transforms.Resize
+        params:
+          size: ${image_size}  #train img resolution
+          interpolation: 3
+      - target: torchvision.transforms.CenterCrop
+        params:
+          size: ${image_size}
+      split: train
+
+  validation: #params val dataset
+    target: ldm.data.re10k.Re10kDiffmapDataset
+    params: 
+    # Merge dataset_params with new params fields
+      root_dir: datasets/re10k
+      scenes: ${scenes}
+      val_scenes: ${val_scenes}
+      stride: ${stride}
+      n_future: ${n_future}
+      n_ctxt: ${n_ctxt}
+      flip_trajectories: ${flip_trajectories}
+      image_transforms:
+      - target: torchvision.transforms.Resize
+        params:
+          size: ${image_size}  #train img resolution
+          interpolation: 3
+      - target: torchvision.transforms.CenterCrop
+        params:
+          size: ${image_size}
+      split: validation
+  
+  test: null
