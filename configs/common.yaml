@@ -51,3 +51,9 @@ experiment_cfg:
     gpus: [0]
     num_nodes: 1
     resume_from_checkpoint: ""
+
+hydra:
+  run:
+    dir: .
+  sweep:
+    dir: .
