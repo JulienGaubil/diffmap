@@ -22,17 +22,20 @@ from torchvision.utils import save_image
 from torch import Tensor
 from torchvision.transforms import functional as FT
 
+from .utils import BatchRunningStd
 from ldm.data.utils.tforms import CenterCropFlow
 from ldm.misc.projection import compute_consistency_mask
 from ..modules.flowmap.flow import Flows
 from ..modules.flowmap.third_party.raft.core.raft import RAFT
 from ..modules.flowmap.third_party.raft.core.utils.utils import InputPadder, forward_interpolate
 
+std_estimator = BatchRunningStd()
+
 def resize_flow_mask(flow_mask, size):
     flow_mask = rearrange(flow_mask, 'h w -> () h w')
     flow_mask_resized = FT.center_crop(FT.resize(flow_mask, size), size)
     flow_mask_resized = flow_mask_resized.squeeze()
-    return flow_mask_resized
+    return flow_mask_resized.to(torch.float16)
 
 
 def resize_flow(flow, size):
@@ -40,7 +43,7 @@ def resize_flow(flow, size):
     flow = rearrange(flow, 'h w c -> c h w')
     flow_resized = center_crop_flow(FT.resize(flow, size))
     flow_resized = rearrange(flow_resized, 'c h w -> h w c')
-    return flow_resized
+    return flow_resized.to(torch.float16)
 
 def resize_im(im, size):
     return FT.center_crop(FT.resize(im, size), size)
@@ -53,11 +56,12 @@ def dump_scene(
     stride: int,
     size: list[int]
 ) -> None:
-    
-    fwd_flows = flows.forward.squeeze(0).to(torch.float16) # (pair=frame-1 height width 2)
-    bwd_flows = flows.backward.squeeze(0).to(torch.float16) # (pair=frame-1 height width 2)
-    masks_flow_fwd = flows.forward_mask.squeeze(0).to(torch.float16) # (pair=frame-1 height width)
-    masks_flow_bwd = flows.backward_mask.squeeze(0).to(torch.float16) # (pair=frame-1 height width)
+    global std_estimator
+
+    fwd_flows = flows.forward.squeeze(0) # (pair=frame-1 height width 2)
+    bwd_flows = flows.backward.squeeze(0) # (pair=frame-1 height width 2)
+    masks_flow_fwd = flows.forward_mask.squeeze(0) # (pair=frame-1 height width)
+    masks_flow_bwd = flows.backward_mask.squeeze(0) # (pair=frame-1 height width)
 
     if stride == 1:
         suffix = ""
@@ -85,16 +89,19 @@ def dump_scene(
 
         if i < len(fwd_flows):
             # Clone slices (else saves the whole tensor, see: https://discuss.pytorch.org/t/saving-tensor-with-torch-save-uses-too-much-memory/46865/3)
-            fwd_flow = fwd_flows[i].clone()
-            bwd_flow = bwd_flows[i].clone()
-            mask_flow_fwd = masks_flow_fwd[i].clone()
-            mask_flow_bwd = masks_flow_bwd[i].clone()
+            fwd_flow = fwd_flows[i].clone().to(torch.float16)
+            bwd_flow = bwd_flows[i].clone().to(torch.float16)
+            mask_flow_fwd = masks_flow_fwd[i].clone().to(torch.float16)
+            mask_flow_bwd = masks_flow_bwd[i].clone().to(torch.float16)
 
             if size is not None:
                 fwd_flow = resize_flow(fwd_flow, size)
                 bwd_flow = resize_flow(bwd_flow, size)
                 mask_flow_fwd = resize_flow_mask(mask_flow_fwd, size)
                 mask_flow_bwd = resize_flow_mask(mask_flow_bwd, size)
+
+            # Update running mean and std estimate.
+            std_estimator.update(fwd_flow)
 
             # Save flow, RGB flow viz and frames.
             torch.save(fwd_flow, os.path.join(flow_fwd_path / Path(f'flow_fwd_%06d_%06d.pt' % (curr_idx, next_idx))))
@@ -106,6 +113,10 @@ def dump_scene(
             frame = resize_im(frame, size)
 
         save_image(frame, img_path / Path(f"frame%06d.jpg"%curr_idx) )
+    
+    print(0.8, scene_path, 'SCENE MEAN, STD : ', fwd_flows.mean(), fwd_flows.std())
+    print(0.9, scene_path, 'CURRENT MEAN, STD ESTIMATE: ', std_estimator.get_mean_std())
+    print('')
 
 def compute_flows_raft(
     scene_path: Path,
@@ -204,6 +215,8 @@ def compute_flows_raft(
         config_name='preprocess_co3d'
 )
 def preprocess_co3d_raft(cfg: DictConfig) -> None:
+    global std_estimator
+
     # Saving paths.
     root = Path(cfg['data']['root'])
     scenes = cfg['data']['scenes']
@@ -249,6 +262,8 @@ def preprocess_co3d_raft(cfg: DictConfig) -> None:
         # Compute and save flow.
         frames, flows = compute_flows_raft(scene_path, args, flow_predictor, stride)
         dump_scene(frames, flows, scene_path, stride, size)
+
+    print(0.10, 'FINAL STD, MEAN ESTIMATE: ', std_estimator.get_mean_std())
  
 if __name__ == "__main__":
     preprocess_co3d_raft()

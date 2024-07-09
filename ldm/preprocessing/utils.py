@@ -29,3 +29,23 @@ def frames_to_jpegs(frames: Float[Tensor, "batch 3 height width"]) -> list[Float
 
     return jpeg_tensors
 
+class BatchRunningStd:
+    def __init__(self):
+        self.n = 0
+        self.S1 = 0
+        self.S2 = 0
+
+    def update(self, batch):
+
+        batch = batch.flatten().to(torch.float32)
+        batch_size = len(batch)
+        self.S1 += batch.sum()
+        self.S2 += (batch ** 2).sum()
+        self.n += batch_size
+
+    def get_mean_std(self):
+        running_mean = (1 / self.n) * self.S1
+        running_std = ((1 / (self.n - 1)) * (self.S2 - (1 / self.n) * (self.S1 **2))).sqrt()
+        
+        return running_mean, running_std
+
