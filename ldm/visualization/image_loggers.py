@@ -401,7 +401,7 @@ class ImageLoggerDiffmap(ImageLogger):
             else:
                 nrow = min(self.log_images_kwargs['N'], self.max_images)
         
-        label_log_folder = '_'.join([split, modality._id])
+        label_log_folder = '/'.join(['_'.join([split, modality.modality]), modality.name])
         log_dict_modality = {label_visualization: visualization}
 
         # Save visualizations locally.
