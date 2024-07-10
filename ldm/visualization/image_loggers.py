@@ -435,7 +435,7 @@ class ImageLoggerDiffmap(ImageLogger):
         x_intermediate, samples_intermediate = pl_module.sample_intermediate(x_start=x, cond=c, t=t_intermediate)
 
         # Prepare every intermediate tensor.
-        visualization_all = {modality._id: list() for modality in pl_module.modalities_out.denoised_modalities}
+        visualization_all = {modality._id: list() for modality in pl_module.modalities_out}
         for intermediate_tensor in [x, x_intermediate, samples_intermediate.x_denoised, samples_intermediate.x_recon]: # visualized tensors
             intermediate_samples = rearrange(intermediate_tensor, 'b (f c) h w -> b f c h w', c=pl_module.channels_m)
             intermediate_samples = pl_module.modalities_out.split_modalities_multiplicity(intermediate_samples, modality_ids=pl_module.modalities_out.ids_denoised)
@@ -447,7 +447,7 @@ class ImageLoggerDiffmap(ImageLogger):
                 visualization_intermediate = rearrange(visualization_intermediate, '(b f) c h w -> b f c h w', b=B)
                 visualization_all[modality._id].append(visualization_intermediate[:,0]) # (sample, channel, height, width) subsample to select only first future frame intermediate visualization
 
-        # Log all intermediate visualizations for every modality.
+        # Log all intermediate visualizations for every denoised modality.
         for modality in pl_module.modalities_out.denoised_modalities:
             visualization = torch.stack(visualization_all[modality._id], dim=0) # (v b c h w)
             visualization = rearrange(visualization, 'v b c h w -> (v b) c h w')
@@ -460,6 +460,37 @@ class ImageLoggerDiffmap(ImageLogger):
                 batch_idx,
                 f'intermediates_{t_intermediate}',
                 nrow=B
+            )
+
+        # Log intermediates for clean modalities.
+        weights = samples_intermediate.weights
+        samples_prediction = rearrange(samples_intermediate.x_predicted, 'b (f c) h w -> b f c h w', c=pl_module.channels_m)
+        samples_prediction = pl_module.modalities_out.split_modalities_multiplicity(samples_prediction, modality_ids=pl_module.modalities_out.ids_clean)
+        for modality in pl_module.modalities_out.clean_modalities:
+            sample_m = samples_prediction[modality._id]
+            visualization = self.prepare_visualization(sample_m, modality, sample=True)
+            self.log_visualization(
+                pl_module,
+                visualization,
+                modality,
+                logger,
+                split,
+                batch_idx,
+                f'intermediates_{t_intermediate}',
+            )
+
+        # Log intermediates for correspondence weight samples.
+        if weights is not None:
+            modality_weight = Modality(name='correspondence', modality='weight', multiplicity=weights.size(1), channels_m=0, denoised=False)
+            visualization = self.prepare_visualization(weights, modality_weight)
+            self.log_visualization(
+                pl_module,
+                visualization,
+                modality_weight,
+                logger,
+                split,
+                batch_idx,
+                f'intermediates_{t_intermediate}',
             )
 
     def log_inputs(
@@ -504,7 +535,6 @@ class ImageLoggerDiffmap(ImageLogger):
                     split,
                     batch_idx,
                     'conditioning',
-                    nrow=pl_module.n_ctxt
                 )
 
         # Log visualizations.
