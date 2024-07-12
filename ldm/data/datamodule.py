@@ -92,8 +92,7 @@ class DataModuleFromConfig(pl.LightningDataModule):
 
         if validation is not None:
             self.dataset_configs["validation"] = validation
-            if self.dataset_configs["validation"].get('params', {}).get('val_scenes', []) is not None:
-                self.val_dataloader = partial(self._val_dataloader, shuffle=shuffle_val_dataloader)
+            self.val_dataloader = partial(self._val_dataloader, shuffle=shuffle_val_dataloader)
         
         if test is not None:
             self.dataset_configs["test"] = test
