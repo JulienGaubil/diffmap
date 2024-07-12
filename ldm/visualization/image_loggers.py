@@ -246,7 +246,7 @@ class ImageLoggerDiffmap(ImageLogger):
         '''
         for k in images:
             images_viz = images[k]
-            nrow_ = nrow if images_viz.size(0) // nrow > 1 else images_viz.size(0)
+            nrow_ = nrow if nrow > 1 else images_viz.size(0)
             grid = torchvision.utils.make_grid(images_viz, nrow=nrow_)
             tag = f"{split}/{k}"
             pl_module.logger.experiment.add_image(
@@ -263,7 +263,7 @@ class ImageLoggerDiffmap(ImageLogger):
         for key in images:
             # Create samples grid.
             images_viz = images[key]
-            nrow_ = nrow if images_viz.size(0) // nrow > 1 else images_viz.size(0)
+            nrow_ = nrow if nrow > 1 else images_viz.size(0)
             grid = torchvision.utils.make_grid(images_viz, nrow=nrow_)
             grid = rearrange(grid, 'c h w -> h w c').squeeze(-1)
             grid = grid.numpy()
@@ -397,7 +397,7 @@ class ImageLoggerDiffmap(ImageLogger):
     ) -> None:
         if nrow is None:
             if pl_module.n_future > 1:
-                nrow = pl_module.n_future 
+                nrow = pl_module.n_future
             else:
                 nrow = min(self.log_images_kwargs['N'], self.max_images)
         
@@ -520,7 +520,6 @@ class ImageLoggerDiffmap(ImageLogger):
         xc_log = rearrange(xc, 'b (f c) h w -> b f c h w', c=pl_module.channels_m)
         x_split = pl_module.modalities_in.split_modalities_multiplicity(x_log)
         xc_split = pl_module.modalities_cond.split_modalities_multiplicity(xc_log)
-        n_row = min(x.shape[0], n_row)
 
         # Prepare and log conditioning visualizations.
         for modality in pl_module.modalities_cond:
@@ -535,12 +534,11 @@ class ImageLoggerDiffmap(ImageLogger):
                     split,
                     batch_idx,
                     'conditioning',
+                    nrow=pl_module.n_ctxt
                 )
 
-        # Log visualizations.
+        # Log input visualizations.
         for modality in pl_module.modalities_in:
-
-            # log[modality]["inputs"] = x_split[modality._id]
             x_m = x_split[modality._id]
             visualization = self.prepare_visualization(x_m, modality)
             self.log_visualization(
@@ -555,6 +553,7 @@ class ImageLoggerDiffmap(ImageLogger):
 
             if plot_diffusion_rows: #computes steps of forward process and logs it
                 raise NotImplementedError # handle n > 1 future frames
+                # n_row = min(x.shape[0], n_row)
                 # # get diffusion row
                 # diffusion_row = list()
                 # x_start = x[modality._id][:n_row]
