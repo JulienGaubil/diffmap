@@ -24,8 +24,6 @@ from .diffmap import DiffmapDataset
 import numpy as np
 import glob
 import os, os.path
-
-
 import glob
 import torch
 import os, os.path
@@ -42,20 +40,29 @@ from omegaconf import ListConfig
 from typing import Literal
 
 from .diffmap import DiffmapDataset
+from .utils.tforms import CenterCropFlow
 
 to_tensor = tf.ToTensor()
+
+# Flow statistics (mean, std) for every stride
+FLOW_STATISTICS = {
+    3: (0.0006, 0.0138),
+    9: (0.0022, 0.0396)
+}
+
 
 class Re10kDiffmapDataset(DiffmapDataset, Dataset):
     def __init__(self,
         root_dir: str,
+        split: Literal["train", "validation", "test"],
         image_transforms: list = [],
-        split: Literal["train", "validation", "test"] = "train",
         scenes: list | ListConfig | str | int | None = None,
         val_scenes: list | ListConfig | str | int | None = None,
         stride: int = 1,
         n_future: int = 1,
         n_ctxt: int = 1,
-        flip_trajectories: bool = False
+        flip_trajectories: bool = False,
+        normalize_flow: bool = False
     ) -> None:
 
         DiffmapDataset.__init__(self, root_dir, image_transforms, split)
@@ -67,6 +74,7 @@ class Re10kDiffmapDataset(DiffmapDataset, Dataset):
         self.n_future = n_future
         self.n_ctxt = n_ctxt
         self.flip_trajectories = flip_trajectories
+        self.flow_statistics = FLOW_STATISTICS.get(self.stride, (0,1)) if normalize_flow else (0,1) #(mean, std)
 
         # Load val scenes - default no validation.
         if self.split == "validation":
@@ -74,10 +82,10 @@ class Re10kDiffmapDataset(DiffmapDataset, Dataset):
         elif self.split == "train":
             scenes = self.load_list_config(scenes)
         self.scenes = self.load_scenes(scenes, default_all=True)
-        assert len(self.scenes) > 0, "No train scene provided."
+        assert len(self.scenes) > 0, "No scene provided in dataloader."
         
         print("Scenes : ", self.scenes)
-        print(0.1, len(self.scenes))
+        print(0.1, split, len(self.scenes))
         print('')
         
         # Prepare pairs of frames and flows.
@@ -87,27 +95,18 @@ class Re10kDiffmapDataset(DiffmapDataset, Dataset):
 
             # Load flow and image paths.
             if self.stride == 1:
-                paths_frames = sorted((self.root_dir / scene / "images_diffmap_raft").iterdir())
-                paths_flow_fwd = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_forward_raft", "flow_fwd_*.pt")))
-                paths_flow_bwd = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_backward_raft", "flow_bwd_*.pt")))
-                paths_flow_fwd_mask = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_forward_raft", "mask_flow_fwd*.pt")))
-                paths_flow_bwd_mask = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_backward_raft", "mask_flow_bwd*.pt")))
+                paths_frames = sorted((self.root_dir / self.split / scene / "images_diffmap_raft").iterdir())
+                paths_flow_fwd = sorted(glob.glob(os.path.join(self.root_dir, self.split, scene, "flow_forward_raft", "flow_fwd_*.pt")))
+                paths_flow_bwd = sorted(glob.glob(os.path.join(self.root_dir, self.split, scene, "flow_backward_raft", "flow_bwd_*.pt")))
+                paths_flow_fwd_mask = sorted(glob.glob(os.path.join(self.root_dir, self.split, scene, "flow_forward_raft", "mask_flow_fwd*.pt")))
+                paths_flow_bwd_mask = sorted(glob.glob(os.path.join(self.root_dir, self.split, scene, "flow_backward_raft", "mask_flow_bwd*.pt")))
             # TODO - remove hack
-            elif self.stride == 3:
-                paths_frames = sorted((self.root_dir / scene / "images_diffmap_raft_stride_3").iterdir())
-                paths_flow_fwd = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_forward_raft_stride_3", "flow_fwd_*.pt")))
-                paths_flow_bwd = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_backward_raft_stride_3", "flow_bwd_*.pt")))
-                paths_flow_fwd_mask = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_forward_raft_stride_3", "mask_flow_fwd*.pt")))
-                paths_flow_bwd_mask = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_backward_raft_stride_3", "mask_flow_bwd*.pt")))
-            # TODO - remove hack
-            elif self.stride == 12:
-                paths_frames = sorted((self.root_dir / scene / "images_diffmap_raft_stride_12").iterdir())
-                paths_flow_fwd = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_forward_raft_stride_12", "flow_fwd_*.pt")))
-                paths_flow_bwd = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_backward_raft_stride_12", "flow_bwd_*.pt")))
-                paths_flow_fwd_mask = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_forward_raft_stride_12", "mask_flow_fwd*.pt")))
-                paths_flow_bwd_mask = sorted(glob.glob(os.path.join(self.root_dir, scene, "flow_backward_raft_stride_12", "mask_flow_bwd*.pt")))
             else:
-                raise Exception(f'Stride {self.stride} not valid, should be 1 or 3.')
+                paths_frames = sorted((self.root_dir / self.split / scene / f"images_diffmap_raft_stride_{self.stride}").iterdir())
+                paths_flow_fwd = sorted(glob.glob(os.path.join(self.root_dir, self.split, scene, f"flow_forward_raft_stride_{self.stride}", "flow_fwd_*.pt")))
+                paths_flow_bwd = sorted(glob.glob(os.path.join(self.root_dir, self.split, scene, f"flow_backward_raft_stride_{self.stride}", "flow_bwd_*.pt")))
+                paths_flow_fwd_mask = sorted(glob.glob(os.path.join(self.root_dir, self.split, scene, f"flow_forward_raft_stride_{self.stride}", "mask_flow_fwd*.pt")))
+                paths_flow_bwd_mask = sorted(glob.glob(os.path.join(self.root_dir, self.split, scene, f"flow_backward_raft_stride_{self.stride}", "mask_flow_bwd*.pt")))
             
             # Define dataset pairs.
             for idx in range(len(paths_frames) - ((self.n_ctxt + self.n_future - 1) * self.stride)):
@@ -118,6 +117,34 @@ class Re10kDiffmapDataset(DiffmapDataset, Dataset):
                 self.flow_bwd_mask_paths.append([Path(p) for p in paths_flow_bwd_mask[idx : idx + (self.n_ctxt - 1 + self.n_future) * self.stride : stride]])
 
             assert len(self.frame_pair_paths) == len(self.flow_fwd_paths) == len(self.flow_bwd_paths) == len(self.flow_fwd_mask_paths) == len(self.flow_bwd_mask_paths)
+
+    def initialize_flow_tform(self) -> tuple[transforms.Compose]:
+        assert any([isinstance(t, transforms.Resize) for t in self.tform_im.transforms]), "Add a torchvision.transforms.Resize transformation!"
+        assert any([isinstance(t, transforms.CenterCrop) for t in self.tform_im.transforms]), "Add a torchvision.transforms.CenterCrop transformation!"
+
+        for t in self.tform_im.transforms:
+            if isinstance(t, transforms.Resize):
+                new_size = t.size
+            elif isinstance(t, transforms.CenterCrop):
+                crop_size = t.size
+
+        flow_transforms = [
+            transforms.Lambda(lambda flow: flow / self.flow_statistics[1]),
+            transforms.Lambda(lambda flow: rearrange(flow , 'h w c -> c h w')),
+            transforms.Resize(new_size),
+            CenterCropFlow(crop_size),
+            transforms.Lambda(lambda flow: rearrange(flow , 'c h w -> h w c')),
+            transforms.Lambda(lambda flow: torch.cat([flow, torch.zeros_like(flow[:,:,0,None])], dim=2))
+        ]
+        flow_mask_transforms = [
+            transforms.Lambda(lambda mask_flow: mask_flow.unsqueeze(0)),
+            transforms.Resize(new_size),
+            transforms.CenterCrop(crop_size),
+            transforms.Lambda(lambda mask_flow: mask_flow.squeeze(0))            
+        ]
+        flow_transforms = transforms.Compose(flow_transforms)
+        flow_mask_transforms = transforms.Compose(flow_mask_transforms)
+        return flow_transforms, flow_mask_transforms
 
     def load_list_config(self, raw_list_scenes: list | ListConfig | str | int | None) -> list[str]:
         if isinstance(raw_list_scenes, (list, ListConfig)):
@@ -132,11 +159,11 @@ class Re10kDiffmapDataset(DiffmapDataset, Dataset):
     
     def load_scenes(self, scenes_list: list, default_all: bool = True) -> list[Path]:
         scenes = list()
-        scenes_split = sorted([path.name for path in (self.root_dir / self.split).iterdir() if path.is_dir() ])
+        scenes_split = sorted([path.name for path in (self.root_dir / self.split).iterdir() if path.is_dir()])
         if len(scenes_list) > 0:
-            scenes += [os.path.join(self.split, scene) for scene in scenes_list if scene in scenes_split]
+            scenes += [scene for scene in scenes_list if scene in scenes_split]
         elif default_all:
-            scenes += [os.path.join(self.split, scene) for scene in scenes_split]
+            scenes += [scene for scene in scenes_split]
         return scenes
     
     def _get_im(self, filename: Path) -> Float[Tensor, "height width 3"]:
@@ -209,7 +236,8 @@ class Re10kDiffmapDataset(DiffmapDataset, Dataset):
             'fwd_flow': flows_fwd,
             'bwd_flow': flows_bwd,
             'mask_fwd_flow': flow_fwd_masks,
-            'mask_bwd_flow': flow_bwd_masks
+            'mask_bwd_flow': flow_bwd_masks,
+            'flow_normalization': self.flow_statistics[1]
             }
         )
 

@@ -311,11 +311,12 @@ class DDPMDiffmap(DDPM):
         # Return model inputs.
         out = [x, c] # clean image x_0, and conditioning signal
 
-        if return_flows: # add flows
+        if return_flows: # add flows without scaling
             assert all([k in batch.keys() for k in ['fwd_flow', 'bwd_flow', 'mask_fwd_flow', 'mask_bwd_flow']])
+            flow_normalization = batch.get('flow_normalization', 1)
             flows = Flows(**{
-                "forward": batch['fwd_flow'][:bs, :, :, :, :2].to(self.device),
-                "backward":  batch['bwd_flow'][:bs, :, :, :, :2].to(self.device),
+                "forward": batch['fwd_flow'][:bs, :, :, :, :2].to(self.device) * flow_normalization,
+                "backward":  batch['bwd_flow'][:bs, :, :, :, :2].to(self.device) * flow_normalization,
                 "forward_mask": batch['mask_fwd_flow'][:bs, :, :, :].to(self.device),
                 "backward_mask": batch['mask_bwd_flow'][:bs, :, :, :].to(self.device)
                 }
