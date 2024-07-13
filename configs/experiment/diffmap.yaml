@@ -18,6 +18,7 @@ n_ctxt: 1
 channels_m: 3
 stride: 1
 flip_trajectories: False
+normalize_flow: True
 
 data:
   params:

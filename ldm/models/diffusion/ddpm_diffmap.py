@@ -313,7 +313,8 @@ class DDPMDiffmap(DDPM):
 
         if return_flows: # add flows without scaling
             assert all([k in batch.keys() for k in ['fwd_flow', 'bwd_flow', 'mask_fwd_flow', 'mask_bwd_flow']])
-            flow_normalization = batch.get('flow_normalization', 1)
+            flow_normalization = batch.get('flow_normalization', torch.ones(bs))
+            flow_normalization = flow_normalization[:bs,None,None,None,None].float().to(self.device)
             flows = Flows(**{
                 "forward": batch['fwd_flow'][:bs, :, :, :, :2].to(self.device) * flow_normalization,
                 "backward":  batch['bwd_flow'][:bs, :, :, :, :2].to(self.device) * flow_normalization,

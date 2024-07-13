@@ -36,6 +36,7 @@ model:
     compute_weights: True
     ckpt_path: null
     scheduler_config: null
+    normalize_flow: True
 
     unet_config:
       params:
