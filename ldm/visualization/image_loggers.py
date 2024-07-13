@@ -12,7 +12,7 @@ from PIL import Image
 from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.utilities import rank_zero_only
 from flow_vis_torch import flow_to_color
-from einops import rearrange
+from einops import rearrange, repeat
 
 from ldm.misc.util import rank_zero_print
 from ldm.misc.modalities import Modality
@@ -419,7 +419,7 @@ class ImageLoggerDiffmap(ImageLogger):
         logger_log_images(pl_module, log_dict_modality, pl_module.global_step, label_log_folder, nrow)
 
     @torch.no_grad()
-    def log_intermediates(
+    def log_intermediate_samples(
         self,
         pl_module: pl.LightningModule,
         x: Float[Tensor, "sample noisy_channel height width"],
@@ -490,7 +490,52 @@ class ImageLoggerDiffmap(ImageLogger):
                 logger,
                 split,
                 batch_idx,
-                f'intermediates_{t_intermediate}',
+                f'intermediate_sample_{t_intermediate}',
+            )
+
+    def log_intermediate_inputs(
+        self,
+        pl_module: pl.LightningModule,
+        x: Float[Tensor, "sample noisy_channel height width"],
+        logger,
+        split: str,
+        batch_idx: int
+    ) -> None:
+        '''Log forward diffusion process intermediate steps.
+        '''
+        B = x.size(0)
+        visualization_all = {modality._id: list() for modality in pl_module.modalities_in.denoised_modalities}
+
+        # Get diffusion intermediates.
+        for t in range(pl_module.num_timesteps):
+            if t % pl_module.log_every_t == 0 or t == pl_module.num_timesteps - 1:
+                t = repeat(torch.tensor([t]), '1 -> b', b=B)
+                t = t.to(pl_module.device).long()
+                noise = torch.randn_like(x)
+
+                x_noisy = pl_module.q_sample(x_start=x, t=t, noise=noise) # forward process
+                x_noisy = rearrange(x_noisy, 'b (f c) h w -> b f c h w', c=pl_module.channels_m)
+                x_noisy_split = pl_module.modalities_in.split_modalities_multiplicity(x_noisy, modality_ids=pl_module.modalities_in.ids_denoised)
+
+                for modality in pl_module.modalities_in.denoised_modalities:
+                    visualization_intermediate = self.prepare_visualization(x_noisy_split[modality._id], modality)
+                    visualization_intermediate = rearrange(visualization_intermediate, '(b f) c h w -> b f c h w', b=B)
+                    visualization_all[modality._id].append(visualization_intermediate[:,0]) # (sample, channel, height, width) subsample to select only first future frame intermediate visualization
+
+        # Log all intermediate visualizations for every noisy modality.
+        for modality in pl_module.modalities_in.denoised_modalities:
+            n = len(visualization_all[modality._id])
+            diffusion_grid = torch.stack(visualization_all[modality._id], dim=1) # (b n c h w)
+            diffusion_grid = rearrange(diffusion_grid, 'b n c h w -> (b n) c h w')
+            self.log_visualization(
+                pl_module,
+                diffusion_grid,
+                modality,
+                logger,
+                split,
+                batch_idx,
+                'forward_diffusion_row',
+                nrow=n
             )
 
     def log_inputs(
@@ -500,7 +545,6 @@ class ImageLoggerDiffmap(ImageLogger):
         logger,
         split: str,
         batch_idx: int,
-        n_row: int = 4,
         N: int = 8,
         plot_diffusion_rows: bool = False,
         **kwargs
@@ -551,25 +595,8 @@ class ImageLoggerDiffmap(ImageLogger):
                 'input'
             )
 
-            if plot_diffusion_rows: #computes steps of forward process and logs it
-                raise NotImplementedError # handle n > 1 future frames
-                # n_row = min(x.shape[0], n_row)
-                # # get diffusion row
-                # diffusion_row = list()
-                # x_start = x[modality._id][:n_row]
-                # for t in range(pl_module.num_timesteps):
-                #     if t % pl_module.log_every_t == 0 or t == pl_module.num_timesteps - 1:
-                #         t = repeat(torch.tensor([t]), '1 -> b', b=n_row)
-                #         t = t.to(pl_module.device).long()
-                #         noise = torch.randn_like(x_start)
-                #         x_noisy = pl_module.q_sample(x_start=x_start, t=t, noise=noise)
-                #         diffusion_row.append(x_noisy)
-
-                # diffusion_row = torch.stack(diffusion_row)  # n_log_step, n_row, C, H, W
-                # diffusion_grid = rearrange(diffusion_row, 'n b c h w -> b n c h w')
-                # diffusion_grid = rearrange(diffusion_grid, 'b n c h w -> (b n) c h w')
-                # diffusion_grid = make_grid(diffusion_grid, nrow=diffusion_row.shape[0])
-                # log[modality]["diffusion_row"] = diffusion_grid
+        if plot_diffusion_rows:
+            self.log_intermediate_inputs(pl_module, x, logger, split, batch_idx)
     
     @torch.no_grad()
     def log_samples(
@@ -671,7 +698,7 @@ class ImageLoggerDiffmap(ImageLogger):
 
             # Visualize intermediate diffusion step.
             if pl_module.modalities_out.n_noisy_channels > 0:
-                self.log_intermediates(pl_module, x, c, logger, split, batch_idx)
+                self.log_intermediate_samples(pl_module, x, c, logger, split, batch_idx)
                 
             
             # Visualize intermediate diffusion rows.
