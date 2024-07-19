@@ -17,6 +17,7 @@ n_ctxt: 1
 channels_m: 3
 stride: 1
 flip_trajectories: False
+normalize_flow: True
 
 data:
   params:
@@ -30,13 +31,13 @@ model:
     log_every_t: 200 #when logging generated samples, frequency of logging for intermediate samples  
     timesteps: 1000 #sampling timesteps in forward/backward
     n_future: ${n_future}
+    n_ctxt: ${n_ctxt}
     conditioning_key: concat #defines the type of conditioning ie (crossattn, concat, hybrid)
     parameterization: eps
     unet_trainable: all  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn, false)
     compute_weights: True
     ckpt_path: null
     scheduler_config: null
-    normalize_flow: True
 
     unet_config:
       params:
@@ -68,6 +69,8 @@ lightning:
           N: 16 # batch size for logging
           unconditional_guidance_scale: 0.0 #classifier-free guidance coeff
           unconditional_guidance_label: [""]
+          ddim_steps: 200
+          ddim_eta: 1.
 
   trainer:
     gpus: [0]

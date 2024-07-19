@@ -13,7 +13,7 @@ from ldm.misc.util import instantiate_from_config, default
 @dataclass
 class Modality:
     name: str
-    modality: Literal["rgb", "flow", "depth"]
+    modality: Literal["rgb", "flow", "depth", "weight"]
     multiplicity: int
     channels_m: int # number of input/output channels per modality without multiplicity
     denoised: bool

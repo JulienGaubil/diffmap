@@ -1,12 +1,12 @@
 import importlib
 import torch
-from torch import optim
 import numpy as np
 
+from typing import Any, Literal
 from inspect import isfunction
 from PIL import Image, ImageDraw, ImageFont
 from jaxtyping import Float
-from torch import Tensor
+from torch import optim, Tensor
 from pytorch_lightning.utilities import rank_zero_only
 
 @rank_zero_only
@@ -234,3 +234,104 @@ def modify_conv_weights(
     for i in range(n-1):
         new_weights = torch.cat((new_weights, extra_weights.clone()), dim=dim)
     return new_weights
+
+
+
+
+############### Nested sets utils ###############
+
+
+def get_value(dictionnary, keys: list[str] | str) -> Any:
+    '''Get value from a nested dict for a given key sequence.
+    '''
+    if isinstance(keys, str):
+        keys = [keys]
+    
+    if len(keys) > 0:
+        tmp_dict = dictionnary
+        for key in keys:
+            try:
+                tmp_dict = tmp_dict[key]
+            except KeyError:
+                return None
+        return tmp_dict
+    else:
+        return None
+    
+
+def default_set(
+    dictionnary: dict,
+    keys: list[str] | str,
+    value: Any
+) -> None:
+    '''Set value in a nested dict for a given key sequence.
+    '''
+    # Replace value in dict.
+    if get_value(dictionnary,keys) is not None:
+        if len(keys) > 1:
+            tmp_dict = get_value(dictionnary, keys[:-1])
+            tmp_dict[keys[-1]] = value
+        else:
+            dictionnary[keys[-1]] = value
+        return None
+    # Put value in dict.
+    elif value is not None and len(keys) > 0:
+        tmp_dict = dictionnary
+
+        for i, key in enumerate(keys):
+            try:
+                tmp_dict = tmp_dict[key]
+            except KeyError:
+                # Create dict if not final key.
+                if i < len(keys) -1:
+                    tmp_dict[key] = dict()
+                    tmp_dict = tmp_dict[key]
+                # Initiate leaf list and exits.
+                else:
+                    tmp_dict[key] = value
+                return None
+
+def set_nested(
+    dictionnary: dict,
+    keys: list[str] | str,
+    value: Any,
+    operation: Literal["append", "extend", "set"] = "append" #defines operation to perform, either append to list, extend a list, or replace/set the value.
+) -> None:
+    '''Set values in a nested dict given a key sequence.
+    '''
+    if isinstance(keys, str):
+        keys = [keys]
+
+    if operation == "set":
+        return default_set(dictionnary=dictionnary, keys=keys, value=value)
+    
+    if value is not None and len(keys) > 0:
+        tmp_dict = dictionnary
+
+        for i, key in enumerate(keys):
+            try:
+                tmp_dict = tmp_dict[key]
+            except KeyError:
+                # Create dict if not final key.
+                if i < len(keys) -1:
+                    tmp_dict[key] = dict()
+                    tmp_dict = tmp_dict[key]
+                # Instantiate leaf list and exits.
+                else:
+                    if operation == "append":
+                        tmp_dict[key] = [value]
+                    elif operation == "extend":
+                        assert isinstance(value, list)
+                        tmp_dict[key] = value
+                    return None
+
+        # Extend leaf list.
+        if operation == "append":
+            assert isinstance(tmp_dict, list)
+            tmp_dict.append(value)
+        elif operation == "extend":
+            assert isinstance(value, list) and isinstance(tmp_dict, list)
+            tmp_dict.extend(value)
+        else:
+            raise Exception('Operation not recognized, should be "append", "extend" or "set".')
+        return None

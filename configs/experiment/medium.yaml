@@ -1,9 +1,5 @@
 # @package _global_
 
-# Defines default config.
-defaults:
-  - override /diffusion_model/scheduler@model.params.scheduler_config: linear_increase_decrease
-
 model:
   params:
     unet_config:
