@@ -34,8 +34,9 @@ modalities_out:
         channels_m: ${channels_m} 
         denoised: True
 
-  - target: ldm.misc.modalities.DepthModalities
+  - target: ldm.misc.modalities.GeometryModalities
     params:
+      parameterization: depth
       ctxt_cfg:
         multiplicity: 1
         channels_m: ${channels_m} 
