@@ -1,11 +1,10 @@
-import os, sys, glob, datetime, importlib, csv
+import os, glob
 import numpy as np
 import torch
 import torchvision
 import pytorch_lightning as pl
 
 from contextlib import nullcontext
-from pathlib import Path
 from jaxtyping import Float
 from torch import Tensor
 from PIL import Image
@@ -13,10 +12,17 @@ from pytorch_lightning.callbacks import Callback
 from pytorch_lightning.utilities import rank_zero_only
 from flow_vis_torch import flow_to_color
 from einops import rearrange, repeat
+from omegaconf import OmegaConf
+from dataclasses import fields
 
 from ldm.misc.util import rank_zero_print
 from ldm.misc.modalities import Modality
-from ldm.visualization import color_map_depth, apply_color_map_to_image, filter_depth, warp_image_flow, overlay_images
+from ldm.visualization.utils import prepare_visualization
+from ldm.modules.flowmap.model.model_wrapper_pretrain import ModelOutput
+from ldm.modules.flowmap.dataset.types import Batch
+from ldm.modules.flowmap.flow import Flows
+from ldm.modules.flowmap.visualization import VisualizerSummaryCfg, VisualizerSummary, VisualizerTrajectoryCfg, VisualizerTrajectory
+from ldm.modules.flowmap.config.common import get_typed_root_config_diffmap
 
 
 class ImageLogger(Callback):
@@ -233,17 +239,33 @@ class SingleImageLogger(Callback):
 
 
 class ImageLoggerDiffmap(ImageLogger):
-    def __init__(self, batch_frequency, max_images, clamp=True, increase_log_steps=True,
-                 rescale=True, disabled=False, log_on_batch_idx=False, log_first_step=False,
-                 log_images_kwargs=None, log_all_val=False):
-        super().__init__(batch_frequency, max_images, clamp, increase_log_steps,
-                 rescale, disabled, log_on_batch_idx, log_first_step,
-                 log_images_kwargs, log_all_val)
+    def __init__(
+        self, batch_frequency, max_images, clamp=True, increase_log_steps=True,
+        rescale=True, disabled=False, log_on_batch_idx=False, log_first_step=False,
+        log_images_kwargs=None, log_all_val=False
+    ):
+        super().__init__(
+            batch_frequency, max_images, clamp, increase_log_steps,
+            rescale, disabled, log_on_batch_idx, log_first_step,
+            log_images_kwargs, log_all_val
+        )
+
+        # Instantiate trajectory visualizer.
+        config_traj = {'name': "trajectory"}
+        config_traj = OmegaConf.create(config_traj)
+        cfg_traj = get_typed_root_config_diffmap(config_traj, VisualizerTrajectoryCfg)
+        self.viz_trajectory = VisualizerTrajectory(cfg_traj)
+
+        # Instantiate flowmap summary visualizer.
+        config_viz = {'name': "summary", 'num_vis_frames': 1000}
+        config_viz = OmegaConf.create(config_viz)
+        cfg_viz = get_typed_root_config_diffmap(config_viz, VisualizerSummaryCfg)
+        self.viz_summary = VisualizerSummary(cfg_viz)
 
     @rank_zero_only
     def _testtube(self, pl_module, images, batch_idx, split, nrow):
-        '''Create grid visualization and log for tensorboard.
-        '''
+        """Create grid visualization and log for tensorboard.
+        """
         for k in images:
             images_viz = images[k]
             nrow_ = nrow if nrow > 1 else images_viz.size(0)
@@ -255,8 +277,8 @@ class ImageLoggerDiffmap(ImageLogger):
 
     @rank_zero_only
     def log_local(self, save_dir, split, images, global_step, current_epoch, batch_idx, nrow):
-        '''Prepare and save local logs.
-        '''
+        """Prepare and save local logs.
+        """
         root = os.path.join(save_dir, "images", split)
 
         # Log every visualization for the modality.
@@ -280,8 +302,8 @@ class ImageLoggerDiffmap(ImageLogger):
             Image.fromarray(grid).save(path)
 
     def prepare_images(self, images: Float[Tensor, "sample frame channel=3 height width"]) -> Float[Tensor, "(sample frame) channel=3 height width"]:
-        '''Subsample and copy tensors to cpu.
-        '''
+        """Subsample and copy tensors to cpu.
+        """
         N = min(images.shape[0], self.max_images)
         images = images[:N].clone()
         images = rearrange(images, 'b f ... -> (b f) ...')
@@ -314,75 +336,7 @@ class ImageLoggerDiffmap(ImageLogger):
     #     warped_images_figs = torch.stack(warped_images_figs, dim=0)
 
     #     return warped_images_figs
-
-    def prepare_log_rgb(
-        self,
-        x: Float[Tensor, "sample frame 3 height width"],
-    ) -> Float[Tensor, "* 3 height width"]:
-        
-        images = self.prepare_images(x)
-
-        # Make RGB figures.
-        if self.clamp:
-            images = torch.clamp(images, -1., 1.)
-        images = (images + 1.0) / 2.0 #  [-1,1] -> [0,1].
-
-        return images
-
-    def prepare_log_flow(
-        self,
-        x: Float[Tensor, "sample frame channel height width"],
-    ) -> Float[Tensor, "(sample frame) 3 height width"]:
-
-        images = self.prepare_images(x)
-        images = flow_to_color(images[:,:2,:,:]) / 255
-
-        return images
-
-    def prepare_log_depth(
-        self,
-        x: Float[Tensor, "sample frame channel height width"],
-        sample: bool = False
-    ) -> Float[Tensor, "(sample frame) 3 height width"]:
-        if len(x.size()) == 5 and x.size(2) == 3:
-                x = x.mean(2)
-        if sample: #exponential mapping for depth samples
-            x = (x / 1000).exp() + 0.01
-        images = self.prepare_images(x)
-        
-        # Apply colorization.
-        images, _ = filter_depth(images)
-        images = color_map_depth(images)
-        
-        return images
     
-    def prepare_log_correspondence_weight(
-        self,
-        x: Float[Tensor, "sample pair height width"]
-    ) -> Float[Tensor, "(sample frame) 3 height width"]:
-        images = self.prepare_images(x)
-        images = apply_color_map_to_image(images, "gray")
-
-        return images
-
-    def prepare_visualization(
-        self,
-        x_m: Float[Tensor, "sample ... height width"],
-        modality: Modality,
-        sample: bool = False
-    ) -> Float[Tensor, "* 3 height width"]:
-        if modality.modality == 'rgb':
-            images = self.prepare_log_rgb(x_m)
-        elif modality.modality == 'depth':
-            images = self.prepare_log_depth(x_m, sample)
-        elif modality.modality == 'flow':
-            images = self.prepare_log_flow(x_m)
-        elif modality.modality == 'weight':
-            images = self.prepare_log_correspondence_weight(x_m)
-        else:
-            raise Exception("Non-recognised modality - should be 'depth', 'rgb' or 'flow'")
-
-        return images
 
     def log_visualization(
         self,
@@ -428,8 +382,8 @@ class ImageLoggerDiffmap(ImageLogger):
         split: str,
         batch_idx: int
     ) -> None:
-        '''Sample and log intermediate denoising step visualization.
-        '''
+        """Sample and log intermediate denoising step visualization.
+        """
         # Sample intermediate diffusion step.
         t_intermediate = pl_module.num_timesteps // 2
         x_intermediate, samples_intermediate = pl_module.sample_intermediate(x_start=x, cond=c, t=t_intermediate)
@@ -443,7 +397,7 @@ class ImageLoggerDiffmap(ImageLogger):
             # Prepare intermediate visualization for every modality.
             for modality in pl_module.modalities_out.denoised_modalities:
                 B = intermediate_samples[modality._id].size(0)
-                visualization_intermediate = self.prepare_visualization(intermediate_samples[modality._id], modality)
+                visualization_intermediate = prepare_visualization(intermediate_samples[modality._id], modality, sample=True)
                 visualization_intermediate = rearrange(visualization_intermediate, '(b f) c h w -> b f c h w', b=B)
                 visualization_all[modality._id].append(visualization_intermediate[:,0]) # (sample, channel, height, width) subsample to select only first future frame intermediate visualization
 
@@ -468,7 +422,7 @@ class ImageLoggerDiffmap(ImageLogger):
         samples_prediction = pl_module.modalities_out.split_modalities_multiplicity(samples_prediction, modality_ids=pl_module.modalities_out.ids_clean)
         for modality in pl_module.modalities_out.clean_modalities:
             sample_m = samples_prediction[modality._id]
-            visualization = self.prepare_visualization(sample_m, modality, sample=True)
+            visualization = prepare_visualization(sample_m, modality, sample=True)
             self.log_visualization(
                 pl_module,
                 visualization,
@@ -482,7 +436,7 @@ class ImageLoggerDiffmap(ImageLogger):
         # Log intermediates for correspondence weight samples.
         if weights is not None:
             modality_weight = Modality(name='correspondence', modality='weight', multiplicity=weights.size(1), channels_m=0, denoised=False)
-            visualization = self.prepare_visualization(weights, modality_weight)
+            visualization = prepare_visualization(weights, modality_weight)
             self.log_visualization(
                 pl_module,
                 visualization,
@@ -501,8 +455,8 @@ class ImageLoggerDiffmap(ImageLogger):
         split: str,
         batch_idx: int
     ) -> None:
-        '''Log forward diffusion process intermediate steps.
-        '''
+        """Log forward diffusion process intermediate steps.
+        """
         B = x.size(0)
         visualization_all = {modality._id: list() for modality in pl_module.modalities_in.denoised_modalities}
 
@@ -518,7 +472,7 @@ class ImageLoggerDiffmap(ImageLogger):
                 x_noisy_split = pl_module.modalities_in.split_modalities_multiplicity(x_noisy, modality_ids=pl_module.modalities_in.ids_denoised)
 
                 for modality in pl_module.modalities_in.denoised_modalities:
-                    visualization_intermediate = self.prepare_visualization(x_noisy_split[modality._id], modality)
+                    visualization_intermediate = prepare_visualization(x_noisy_split[modality._id], modality)
                     visualization_intermediate = rearrange(visualization_intermediate, '(b f) c h w -> b f c h w', b=B)
                     visualization_all[modality._id].append(visualization_intermediate[:,0]) # (sample, channel, height, width) subsample to select only first future frame intermediate visualization
 
@@ -538,6 +492,85 @@ class ImageLoggerDiffmap(ImageLogger):
                 nrow=n
             )
 
+    def log_flowmap(
+        self,
+        pl_module: pl.LightningModule,
+        flowmap_output: ModelOutput,
+        flows: Flows,
+        flowmap_batch: dict, 
+        logger,
+        split: str,
+        batch_idx: int
+    ) -> None:
+        
+        # Prepare visualization inputs.
+        B, F, H, W = flowmap_output.depths.shape
+        idx_viz = np.random.randint(B)
+        batch_viz = Batch(**flowmap_batch)[idx_viz:idx_viz+1]
+        flows_viz = flows[idx_viz:idx_viz+1]
+        model_output_viz = ModelOutput(**{field.name: getattr(flowmap_output, field.name)[idx_viz:idx_viz+1] for field in fields(flowmap_output)})
+        model_viz = None
+        global_step_viz = 1
+        
+        # Visualize depth and pose-induced optical flow.
+        summary_viz = self.viz_summary.visualize(
+            batch_viz,
+            flows_viz,
+            None,
+            model_output_viz,
+            model_viz,
+            global_step_viz
+        )
+        summary_fig = summary_viz['summary'][None].detach().cpu()
+
+        # Prepare trajectory visualization.
+        batch_viz.extrinsics = model_output_viz.extrinsics
+        summary_traj = self.viz_trajectory.visualize(
+            batch_viz,
+            flows_viz,
+            None,
+            model_output_viz,
+            model_viz,
+            global_step_viz
+        )
+        summary_traj_viz = summary_traj['trajectory'][None].detach().cpu()
+
+
+        # Logs visualizations.
+        label_log_folder = '_'.join([split,'flowmap'])
+        log_dict_modality = {
+            'summary': summary_fig,
+            'trajectory': summary_traj_viz
+        }
+        nrow = 1
+        self.log_local(
+            pl_module.logger.save_dir,
+            label_log_folder,
+            log_dict_modality,
+            pl_module.global_step,
+            pl_module.current_epoch,
+            batch_idx,
+            nrow
+        )
+        logger_log_images = self.logger_log_images.get(logger, lambda *args, **kwargs: None)
+        logger_log_images(pl_module, log_dict_modality, pl_module.global_step, label_log_folder, nrow)
+
+        depths = flowmap_output.depths.detach().cpu() # (B, F, H, W), depth maps
+        surfaces = flowmap_output.surfaces.detach().cpu() # (B, F, H, W, XYZ=3), local pointmaps
+        intrinsics = flowmap_output.intrinsics.detach().cpu() # (B, F, 3, 3), estimated camera intrinsics
+        extrinsics = flowmap_output.extrinsics.detach().cpu() # (B, F, 4, 4), estimated camera extrinsics
+        weights = flowmap_output.backward_correspondence_weights.detach().cpu() # (B, F, H, W), backward correspondence weights
+
+        # Log points clouds.
+        vertices_tensor = rearrange(surfaces[idx_viz], 'f h w xyz -> f (h w) xyz')
+        color_tensor = flowmap_batch['videos'][idx_viz].detach().cpu()
+        colors_tensor = (rearrange(color_tensor, 'f c h w -> f (h w) c') * 255).to(torch.int8)
+        config_dict = {
+            'point_size': 10  # Increase point size
+        }
+        pl_module.logger.experiment.add_mesh(f'{split}/flowmap_surfaces', vertices=vertices_tensor, colors=colors_tensor, config_dict= config_dict, global_step=pl_module.global_step)
+        
+
     def log_inputs(
         self,
         pl_module: pl.LightningModule,
@@ -549,8 +582,8 @@ class ImageLoggerDiffmap(ImageLogger):
         plot_diffusion_rows: bool = False,
         **kwargs
     ) -> None:
-        '''Log model inputs.
-        '''
+        """Log model inputs.
+        """
         # Get model inputs
         x, c, xc = pl_module.get_input(
             batch,
@@ -569,7 +602,7 @@ class ImageLoggerDiffmap(ImageLogger):
         for modality in pl_module.modalities_cond:
             if not modality in pl_module.modalities_in:
                 x_m = xc_split[modality._id]
-                visualization = self.prepare_visualization(x_m, modality)
+                visualization = prepare_visualization(x_m, modality)
                 self.log_visualization(
                     pl_module,
                     visualization,
@@ -584,7 +617,7 @@ class ImageLoggerDiffmap(ImageLogger):
         # Log input visualizations.
         for modality in pl_module.modalities_in:
             x_m = x_split[modality._id]
-            visualization = self.prepare_visualization(x_m, modality)
+            visualization = prepare_visualization(x_m, modality)
             self.log_visualization(
                 pl_module,
                 visualization,
@@ -619,14 +652,15 @@ class ImageLoggerDiffmap(ImageLogger):
         unconditional_guidance_label = None,
         **kwargs
     ) -> None:
-        '''Sample model and log samples.
-        '''
-        # Get model inputs
-        x, c, xc = pl_module.get_input(
+        """Sample model and log samples.
+        """
+        # Get model inputs.
+        x, c, flows, xc = pl_module.get_input(
             batch,
             force_c_encode=True,
             return_original_cond=True,
-            bs=N
+            bs=N,
+            return_flows=True
         )
 
         ema_scope = pl_module.ema_scope if use_ema_scope else nullcontext
@@ -646,7 +680,20 @@ class ImageLoggerDiffmap(ImageLogger):
                     ddim_steps=ddim_steps,
                     eta=ddim_eta
                 )
-            
+
+            if pl_module.use_flowmap_loss:
+                dummy_flowmap_batch, flows, depths, correspondence_weights, surfaces, intrinsics = pl_module.get_input_flowmap(samples.x_predicted, flows, samples.weights)
+                _, flowmap_output, metrics_dict = pl_module.flowmap_loss_wrapper(
+                    dummy_flowmap_batch,
+                    flows,
+                    depths,
+                    correspondence_weights,
+                    pl_module.global_step,
+                    surfaces,
+                    intrinsics,
+                    return_outputs=True
+                )
+
             weights = samples.weights
             samples_diffusion = rearrange(samples.x_denoised, 'b (f c) h w -> b f c h w', c=pl_module.channels_m)
             samples_prediction = rearrange(samples.x_predicted, 'b (f c) h w -> b f c h w', c=pl_module.channels_m)
@@ -657,7 +704,7 @@ class ImageLoggerDiffmap(ImageLogger):
             # Log samples and gt.
             for modality in pl_module.modalities_out:
                 sample_m = samples[modality._id]
-                visualization = self.prepare_visualization(sample_m, modality, sample=True)
+                visualization = prepare_visualization(sample_m, modality, sample=True, pointmap_mapping_func=pl_module.geometric_modalities.pointmap_mapping_func) # TODO - remove hack
                 self.log_visualization(
                     pl_module,
                     visualization,
@@ -671,7 +718,7 @@ class ImageLoggerDiffmap(ImageLogger):
                 if modality._id in batch.keys() and modality not in pl_module.modalities_in: #gt
                     x_m = pl_module.get_input_modality(batch, modality._id)[:N]
                     x_m = rearrange(x_m, 'b (f c) h w -> b f c h w', c=modality.channels_m)
-                    visualization = self.prepare_visualization(x_m, modality)
+                    visualization = prepare_visualization(x_m, modality)
                     self.log_visualization(
                         pl_module,
                         visualization,
@@ -685,7 +732,7 @@ class ImageLoggerDiffmap(ImageLogger):
             # Log correspondence weight samples.
             if weights is not None:
                 modality_weight = Modality(name='correspondence', modality='weight', multiplicity=weights.size(1), channels_m=0, denoised=False)
-                visualization = self.prepare_visualization(weights, modality_weight)
+                visualization = prepare_visualization(weights, modality_weight)
                 self.log_visualization(
                     pl_module,
                     visualization,
@@ -699,6 +746,9 @@ class ImageLoggerDiffmap(ImageLogger):
             # Visualize intermediate diffusion step.
             if pl_module.modalities_out.n_noisy_channels > 0:
                 self.log_intermediate_samples(pl_module, x, c, logger, split, batch_idx)
+
+            if pl_module.use_flowmap_loss:
+                self.log_flowmap(pl_module, flowmap_output, flows, dummy_flowmap_batch, logger, split, batch_idx)
                 
             
             # Visualize intermediate diffusion rows.
