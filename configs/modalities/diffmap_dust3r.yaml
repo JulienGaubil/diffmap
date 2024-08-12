@@ -1,0 +1,44 @@
+# Default params used.
+n_future: 1
+n_ctxt: 1
+channels_m: 3
+
+modalities_in:
+  - target: ldm.misc.modalities.RGBModalities
+    params:
+      trgt_cfg:
+        multiplicity: ${n_future}
+        channels_m: ${channels_m} 
+        denoised: True
+
+modalities_out:
+  - target: ldm.misc.modalities.RGBModalities
+    params:
+      trgt_cfg:
+        multiplicity: ${n_future}
+        channels_m: ${channels_m} 
+        denoised: True
+
+  - target: ldm.misc.modalities.GeometryModalities
+    params:
+      parameterization: shared_pointmap
+      pointmap_mapping_func: null
+      
+      ctxt_cfg:
+        multiplicity: 1
+        channels_m: ${channels_m} 
+        denoised: False
+      
+      trgt_cfg:
+        multiplicity: ${n_future}
+        channels_m: ${channels_m} 
+        denoised: False
+
+
+modalities_cond:
+  - target: ldm.misc.modalities.RGBModalities
+    params:
+      ctxt_cfg:
+        multiplicity: ${n_ctxt}
+        channels_m: ${channels_m}
+        denoised: False

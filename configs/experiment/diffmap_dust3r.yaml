@@ -1,0 +1,76 @@
+# @package _global_
+
+# Defines default config.
+defaults:
+  - /data: rooms
+  - /diffusion_model@model: ddpm
+  - /diffusion_model/model@model.params.dust3r_cfg: dust3r
+  - /diffusion_model/scheduler@model.params.scheduler_config: linear_decrease
+  - /diffusion_model/loss@model.params.flowmap_loss_config: flowmap # flowmap loss config
+  - /modalities@model.params.modalities_config: diffmap_dust3r
+
+# Overrides image size in data and model children configs.
+scenes: '000001'
+val_scenes: null
+image_size: 224
+n_future: 1
+n_ctxt: 1
+channels_m: 3
+stride: 1
+flip_trajectories: False
+normalize_flow: True
+
+data:
+  params:
+    batch_size: 16
+    num_workers: 8
+    test: null
+
+model:
+  params:
+    log_every_t: 200 #when logging generated samples, frequency of logging for intermediate samples  
+    timesteps: 1000 #sampling timesteps in forward/backward
+    n_future: ${n_future}
+    n_ctxt: ${n_ctxt}
+    conditioning_key: crossattn #defines the type of conditioning ie (crossattn, concat, hybrid)
+    parameterization: eps
+    unet_trainable: all  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn, false)
+    ckpt_path: null
+    unet_config: null
+
+    cond_stage_config:
+      target: torch.nn.Identity
+
+lightning:
+  find_unused_parameters: true
+
+  callbacks: #configs for image logger
+    image_logger:
+      target: ldm.visualization.image_loggers.ImageLoggerDiffmap
+      params:
+        batch_frequency: 400 #frequency of logging images (counted in iterations) for train and val
+        max_images: 4 #number of samples logged
+        increase_log_steps: False
+        log_all_val: True # permet de logger la validation, sinon ne log pas
+        log_first_step: True
+        log_images_kwargs:
+          use_ema_scope: False
+          inpaint: False
+          plot_progressive_rows: False #defines whether logging intermediate steps when sampling images
+          plot_diffusion_rows: False #defines whether logging diffusion forward process
+          N: 4 #number of reconstructions/samples logged
+          unconditional_guidance_scale: 0.0 #classifier-free guidance coeff
+          unconditional_guidance_label: [""]
+
+  trainer:
+    gpus: [0]
+    max_epochs: 4000 #max number of epochs performed, 1000 is the default
+    max_steps: 30000  #max number of iterations performed, 1000 is the default
+    limit_val_batches: 0.0 # disable validation
+    log_every_n_steps: 50 # metrics logging frequency
+    # check_val_every_n_epoch: 30 #frequency of validation in epochs
+    # val_check_interval: 5 #frequency of validation in iterations
+
+experiment_cfg:
+  logdir: logs/
+  name: rooms_overfit_diffmap

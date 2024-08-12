@@ -12,3 +12,8 @@
 	path = ldm/modules/flowmap/third_party/raft
 	url = https://github.com/princeton-vl/RAFT.git
 	ignore = dirty
+
+[submodule "ldm/thirdp/dust3r"]
+	path = ldm/thirdp/dust3r
+	url = https://github.com/naver/dust3r
+	ignore = dirty
