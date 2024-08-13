@@ -17,3 +17,8 @@
 	path = ldm/thirdp/dust3r
 	url = https://github.com/naver/dust3r
 	ignore = dirty
+
+[submodule "ldm/thirdp/flowmap"]
+	path = ldm/thirdp/flowmap
+	url = https://github.com/dcharatan/flowmap.git
+	ignore = dirty
