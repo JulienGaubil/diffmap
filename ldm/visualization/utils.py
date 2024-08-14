@@ -6,8 +6,8 @@ from torch import Tensor
 from flow_vis_torch import flow_to_color
 from einops import rearrange, repeat
 
-from ldm.modules.flowmap.visualization.depth import color_map_depth
-from ldm.modules.flowmap.visualization.color import apply_color_map_to_image
+from ldm.thirdp.flowmap.flowmap.visualization.depth import color_map_depth
+from ldm.thirdp.flowmap.flowmap.visualization.color import apply_color_map_to_image
 from ldm.visualization import filter_depth
 from ldm.misc.modalities import Modality
 

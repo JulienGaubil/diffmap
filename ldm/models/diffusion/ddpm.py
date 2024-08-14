@@ -30,11 +30,6 @@ from ldm.modules.attention import CrossAttention
 
 from jaxtyping import Float
 from torch import Tensor
-from ldm.modules.flowmap.model.model_wrapper_pretrain import FlowmapLossWrapper
-from ldm.modules.flowmap.config.common import get_typed_root_config_diffmap
-from ldm.modules.flowmap.config.pretrain import DiffmapCfg
-from ldm.modules.flowmap.loss import get_losses
-from ldm.modules.flowmap.model.model import FlowmapModelDiff
 
 
 __conditioning_keys__ = {'concat': 'c_concat',
@@ -55,38 +50,40 @@ def uniform_on_device(r1, r2, shape, device):
 
 class DDPM(pl.LightningModule):
     # classic DDPM with Gaussian diffusion, in image space
-    def __init__(self,
-                 unet_config,
-                 timesteps=1000,
-                 beta_schedule="linear",
-                 loss_type="l2",
-                 ckpt_path=None,
-                 ignore_keys=[],
-                 load_only_unet=False,
-                 monitor="val/loss",
-                 use_ema=True,
-                 first_stage_key="image", #key in batches (dicts) of the target signal to denoise
-                 image_size=256,
-                 channels=3,
-                 log_every_t=100,
-                 clip_denoised=True,
-                 linear_start=1e-4,
-                 linear_end=2e-2,
-                 cosine_s=8e-3,
-                 given_betas=None,
-                 original_elbo_weight=0.,
-                 v_posterior=0.,  # weight for choosing posterior variance as sigma = (1-v) * beta_tilde + v * beta
-                 l_simple_weight=1.,
-                 conditioning_key=None, #defines the type of conditioning ie cross attention, concatenation, hybrid
-                 parameterization="eps",  # all assuming fixed variance schedules
-                 scheduler_config=None,
-                 use_positional_encodings=False,
-                 learn_logvar=False,
-                 logvar_init=0.,
-                 make_it_fit=False,
-                 ucg_training=None,
-                 model=None
-                 ):
+    def __init__(
+        self,
+        unet_config,
+        timesteps=1000,
+        beta_schedule="linear",
+        loss_type="l2",
+        ckpt_path=None,
+        ignore_keys=[],
+        load_only_unet=False,
+        monitor="val/loss",
+        use_ema=True,
+        first_stage_key="image", #key in batches (dicts) of the target signal to denoise
+        image_size=256,
+        channels=3,
+        log_every_t=100,
+        clip_denoised=True,
+        linear_start=1e-4,
+        linear_end=2e-2,
+        cosine_s=8e-3,
+        given_betas=None,
+        original_elbo_weight=0.,
+        v_posterior=0.,  # weight for choosing posterior variance as sigma = (1-v) * beta_tilde + v * beta
+        l_simple_weight=1.,
+        conditioning_key=None, #defines the type of conditioning ie cross attention, concatenation, hybrid
+        parameterization="eps",  # all assuming fixed variance schedules
+        scheduler_config=None,
+        use_positional_encodings=False,
+        learn_logvar=False,
+        logvar_init=0.,
+        make_it_fit=False,
+        ucg_training=None,
+        model=None,
+        **kwargs
+    ):
         super().__init__()
         assert parameterization in ["eps", "x0"], 'currently only supporting "eps" and "x0"'
         self.parameterization = parameterization #DDPM parameterization, if eps estimates noise, else estimates initial image?

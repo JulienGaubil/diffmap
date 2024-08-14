@@ -28,7 +28,7 @@ from pytorch_lightning.utilities import rank_zero_info
 from ldm.misc.util import instantiate_from_config, modify_conv_weights, get_value, set_nested
 from ldm.data.utils.camera import pixel_grid_coordinates, to_euclidean_space, to_projective_space, Camera, K_to_intrinsics, Extrinsics
 from ldm.visualization import filter_depth
-from ldm.modules.flowmap.flow.flow_predictor import Flows
+from ldm.thirdp.flowmap.flowmap.flow.flow_predictor import Flows
 from ldm.misc.projection import compute_flow_projection, compute_consistency_mask
 from ldm.misc.modalities import Modality, Modalities
 from ldm.visualization.utils import *
@@ -566,8 +566,8 @@ def sample(config: DictConfig) -> None:
 
 
             # ############### David ##############
-            # from ldm.modules.flowmap.model.projection import sample_image_grid
-            # from ldm.modules.flowmap.model.projection import unproject, homogenize_points
+            # from ldm.thirdp.flowmap.flowmap.model.projection import sample_image_grid
+            # from ldm.thirdp.flowmap.flowmap.model.projection import unproject, homogenize_points
             # from einops import einsum
             # _, _, dh, dw = flowmap_output.depths.shape
             # xy, _ = sample_image_grid((dh, dw), flowmap_output.extrinsics.device)

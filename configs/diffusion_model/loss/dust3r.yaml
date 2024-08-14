@@ -1,4 +1,0 @@
-alpha: 0.2
-loss_3D:
-  norm_mode: avg_dis
-  gt_scale: False

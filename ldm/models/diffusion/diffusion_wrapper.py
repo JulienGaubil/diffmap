@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import torch.nn.functional as F
 from ldm.misc.util import instantiate_from_config
-from ldm.modules.flowmap.model.backbone.backbone_midas import make_net
+from ldm.thirdp.flowmap.flowmap.model.backbone.backbone_midas import make_net
 from ldm.misc.modalities import Modalities
 
 
@@ -24,6 +24,7 @@ class DiffusionMapWrapper(pl.LightningModule):
         compute_weights: bool = False,
         latent: bool = False,
         n_future: int = 1,
+        **kwargs
     ) -> None:
         super().__init__()
 

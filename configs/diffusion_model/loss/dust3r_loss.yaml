@@ -1,0 +1,7 @@
+target: ldm.loss.dust3r_loss.Dust3rLoss
+
+params:
+  alpha: 0.2
+  loss_3D:
+    norm_mode: avg_dis
+    gt_scale: False

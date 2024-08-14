@@ -16,8 +16,7 @@ from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
 
 from ldm.misc.util import instantiate_from_config, modify_conv_weights, rank_zero_print
-from ldm.modules.flowmap.visualization.depth import color_map_depth
-from ldm.modules.flowmap.visualization.color import apply_color_map_to_image
+from ldm.thirdp.flowmap.flowmap.visualization.depth import color_map_depth
 
 # Enable arithmetic operations in .yaml file with keywords "divide" or "multiply" or "linear".
 OmegaConf.register_new_resolver("divide", (lambda x, y: x//y), replace=True)

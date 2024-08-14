@@ -21,7 +21,7 @@ from ldm.data.utils.camera import Camera, Intrinsics, Extrinsics
 from ldm.data.utils.io import load_exr
 from ldm.data.utils.camera import pixel_grid_coordinates
 from ldm.misc.projection import compute_flow_projection, compute_consistency_mask
-from ldm.modules.flowmap.model.projection import sample_image_grid
+from ldm.thirdp.flowmap.flowmap.model.projection import sample_image_grid
 
 
 def dump_rooms(

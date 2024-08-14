@@ -5,7 +5,7 @@ defaults:
   - /data: rooms
   - /diffusion_model@model: ddpm
   - /diffusion_model/model@model.params.unet_config: unet
-  - /diffusion_model/loss@model.params.flowmap_loss_config: flowmap # flowmap loss config
+  - /diffusion_model/loss@model.params.flowmap_loss_config: flowmap_loss # flowmap loss config
   - /modalities@model.params.modalities_config: diffmap
 
 # Overrides image size in data, model and modalities children configs.
