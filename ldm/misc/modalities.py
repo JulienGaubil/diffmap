@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import torch.nn as nn
 
 from typing import Literal, List, Dict
 from jaxtyping import Float
@@ -395,11 +396,7 @@ class GeometryModalities(SequenceModalities):
         self.parameterization = parameterization
         self.modality_type = "pointmap" if self.parameterization in ["local_pointmap", "shared_pointmap"] else "depth"
         
-        if self.modality_type == "pointmap":
-            assert pointmap_mapping_func is not None
-            self.pointmap_mapping_func = get_obj_from_str(pointmap_mapping_func)
-        else:
-            self.pointmap_mapping_func = lambda x: x
+        self.pointmap_mapping_func = get_obj_from_str(pointmap_mapping_func) if pointmap_mapping_func is not None else nn.Identity()
 
         # Instantiate sequence.
         assert not (ctxt_cfg is None and trgt_cfg is None)

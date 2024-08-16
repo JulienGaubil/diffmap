@@ -8,6 +8,7 @@ from PIL import Image, ImageDraw, ImageFont
 from jaxtyping import Float
 from torch import optim, Tensor
 from pytorch_lightning.utilities import rank_zero_only
+from torch.nn.functional import softplus
 
 @rank_zero_only
 def rank_zero_print(*args):
@@ -335,3 +336,185 @@ def set_nested(
         else:
             raise Exception('Operation not recognized, should be "append", "extend" or "set".')
         return None
+    
+
+
+
+############### 3D Mappings ################
+
+
+def flowmap_dust3r_param(
+    x: Float[Tensor, "sample frame 3 height width"],
+    epsilon: float = 1e-5,
+    infinity: float = 1e8,
+    **kwargs
+) -> Float[Tensor, "sample frame 3 height width"]:
+    # Flowmap exponential mapping.
+    x[:,:,2:3,:,:] = (x[:,:,2:3,:,:] / 1000).exp() + 0.01
+
+    # DUST3R exponential mapping.
+    d = x.norm(dim=2, keepdim=True)
+    pointmaps = x / (d + epsilon)
+    pointmaps = pointmaps.nan_to_num(posinf=infinity, neginf=-infinity)
+    pointmaps = pointmaps * torch.expm1(d)
+
+    return pointmaps
+
+
+def dust3r_flowmap_param(
+    x: Float[Tensor, "sample frame 3 height width"],
+    epsilon: float = 1e-5,
+    infinity: float = 1e8,
+    **kwargs
+) -> Float[Tensor, "sample frame 3 height width"]:
+    # DUST3R exponential mapping.
+    d = x.norm(dim=2, keepdim=True)
+    pointmaps = x / (d + epsilon)
+    pointmaps = pointmaps.nan_to_num(posinf=infinity, neginf=-infinity)
+    pointmaps = pointmaps * torch.expm1(d)
+
+    # Flowmap exponential mapping.
+    pointmaps[:,:,2:3,:,:] = (pointmaps[:,:,2:3,:,:] / 1000).exp() + 0.01
+
+    return pointmaps
+
+
+def soft_dust3r_flowmap_param(
+    x: Float[Tensor, "sample frame 3 height width"],
+    epsilon: float = 1e-5,
+    infinity: float = 1e8,
+    **kwargs
+) -> Float[Tensor, "sample frame 3 height width"]:
+    # DUST3R square mapping.
+    d = x.norm(dim=2, keepdim=True)
+    pointmaps = x / (d + epsilon)
+    pointmaps = pointmaps.nan_to_num(posinf=infinity, neginf=-infinity)
+    pointmaps = pointmaps * d.square()
+
+    # Flowmap exponential mapping.
+    pointmaps[:,:,2:3,:,:] = (pointmaps[:,:,2:3,:,:] / 1000).exp() + 0.01
+
+    return pointmaps
+
+
+
+def norm_flowmap_param(
+    x: Float[Tensor, "sample frame 3 height width"],
+    epsilon: float = 1e-5,
+    infinity: float = 1e8,
+    **kwargs
+) -> Float[Tensor, "sample frame 3 height width"]:
+    d = x.norm(dim=2, keepdim=True)
+    pointmaps = x / (d + epsilon)
+    pointmaps = pointmaps.nan_to_num(posinf=infinity, neginf=-infinity)
+
+    # Flowmap exponential mapping.
+    pointmaps[:,:,2:3,:,:] = (pointmaps[:,:,2:3,:,:] / 1000).exp() + 0.01
+
+    return pointmaps
+
+
+def flowmap_param(
+    x: Float[Tensor, "sample frame 3 height width"],
+    **kwargs
+) -> Float[Tensor, "sample frame 3 height width"]:
+    pointmaps = x
+
+    # Flowmap exponential mapping.
+    pointmaps[:,:,2:3,:,:] = (pointmaps[:,:,2:3,:,:] / 1000).exp() + 0.01
+
+    return pointmaps
+
+
+def tan_map_tanh(
+    x: Float[Tensor, "sample frame 3 height width"],
+    **kwargs
+) -> Float[Tensor, "sample frame 3 height width"]:
+    pointmaps = x
+
+    # Tanh - tan mapping for xy coordinates.
+    pointmaps[:,:,:2,:,:] = torch.tanh(pointmaps[:,:,:2,:,:] / 650)
+    pointmaps[:,:,:2,:,:] = torch.tan(np.pi * pointmaps[:,:,:2,:,:] / 2)
+
+    # Flowmap exponential mapping for depth.
+    pointmaps[:,:,2:3,:,:] = (pointmaps[:,:,2:3,:,:] / 1000).exp() + 0.01
+    
+    return pointmaps
+
+def symmetric_flowmap(
+    x: Float[Tensor, "sample frame 3 height width"],
+    **kwargs
+) -> Float[Tensor, "sample frame 3 height width"]:
+    pointmaps = torch.zeros_like(x)
+    xy = x[:,:,:2,...].clone()
+    pos = (xy > 0)
+    neg = (xy <= 0)
+    xy[pos] = torch.exp(xy[pos] / 1000) - 1
+    xy[neg] = -torch.exp(-xy[neg] / 1000) + 1
+    pointmaps[:,:,:2,...] = xy
+
+    # Apply flowmap exponential mapping.
+    pointmaps[:,:,2:3,:,:] = (x[:,:,2:3,:,:].clone() / 1000).exp() + 0.01
+        
+    return pointmaps
+
+
+def dust3r_softplus_param(
+    x: Float[Tensor, "sample frame 3 height width"],
+    epsilon: float = 1e-8,
+    infinity: float = 1e8,
+    **kwargs
+) -> Float[Tensor, "sample frame 3 height width"]:
+    # DUST3R exponential mapping.
+    d = x.norm(dim=2, keepdim=True)
+    pointmaps = x / (d + epsilon)
+    pointmaps = pointmaps.nan_to_num(posinf=infinity, neginf=-infinity)
+    pointmaps = pointmaps * torch.expm1(d)
+
+    # Softplus mapping.
+    pointmaps[:,:,2:3,:,:] = softplus(pointmaps[:,:,2:3,:,:].clone())
+
+    return pointmaps
+
+
+def dust3r_flowmap_split_param(
+    x: Float[Tensor, "sample frame 3 height width"],
+    epsilon: float = 1e-8,
+    infinity: float = 1e8,
+    **kwargs
+) -> Float[Tensor, "sample frame 3 height width"]:
+    pointmaps = torch.zeros_like(x)
+
+    # DUST3R exponential mapping on XY coordinates only.
+    xy = x[:,:,:2,...].clone()
+    d = xy.norm(dim=2, keepdim=True)
+    xy = xy / (d + epsilon)
+    xy = xy.nan_to_num(posinf=infinity, neginf=-infinity)
+    pointmaps[:,:,:2,...] = xy * torch.expm1(d)
+
+    # Flowmap exponential mapping.
+    pointmaps[:,:,2:3,:,:] = (x[:,:,2:3,:,:].clone() / 1000).exp() + 0.01
+
+    return pointmaps
+
+
+
+def dust3r_softplus_split_param(
+    x: Float[Tensor, "sample frame 3 height width"],
+    epsilon: float = 1e-8,
+    infinity: float = 1e8,
+    **kwargs
+) -> Float[Tensor, "sample frame 3 height width"]:
+    pointmaps = torch.zeros_like(x)
+
+    # DUST3R exponential mapping on XY coordinates only.
+    xy = x[:,:,:2,...].clone()
+    d = xy.norm(dim=2, keepdim=True)
+    xy = xy / (d + epsilon)
+    xy = xy.nan_to_num(posinf=infinity, neginf=-infinity)
+    pointmaps[:,:,:2,...] = xy * torch.expm1(d)
+
+    # Softplus mapping.
+    pointmaps[:,:,2:3,:,:] = softplus(x[:,:,2:3,:,:].clone())
+
+    return pointmaps
