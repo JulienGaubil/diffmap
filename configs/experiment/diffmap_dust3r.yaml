@@ -6,7 +6,7 @@ defaults:
   - /diffusion_model@model: ddpm
   - /diffusion_model/model@model.params.dust3r_cfg: dust3r
   - /diffusion_model/scheduler@model.params.scheduler_config: linear_decrease
-  - /diffusion_model/loss@model.params.flowmap_loss_config: dust3r # flowmap loss config
+  - /loss@model.params.losses_config: [diffusion_loss,dust3r_loss] # dust3r loss config
   - /modalities@model.params.modalities_config: diffmap_dust3r
 
 # Overrides image size in data and model children configs.

@@ -1,13 +1,14 @@
 from jaxtyping import Int
 from omegaconf import DictConfig
-from typing import Literal
+from typing import Literal, Dict
 
 from .ddpm import *
 from .diffusion_wrapper import DiffusionMapWrapper
-from ldm.modules.flowmap.flow import Flows
+from .dust3r_wrapper import Dust3rWrapper
+from ldm.thirdp.flowmap.flowmap.flow import Flows
 from ldm.models.diffusion.ddim import DDIMSamplerDiffmap
 from ldm.models.diffusion.types import Sample
-from ldm.misc.modalities import Modalities
+from ldm.misc.modalities import Modalities, GeometryModalities
 
 __conditioning_keys__ = {'concat': 'c_concat',
                          'crossattn': 'c_crossattn',
@@ -28,7 +29,7 @@ class DDPMDiffmap(DDPM):
         unet_trainable: bool = True,
         n_future: int = 1,
         n_ctxt: int = 1,
-        flowmap_loss_config: DictConfig | None = None,
+        losses_config: DictConfig | ListConfig | list | None = None,
         compute_weights: bool = False,
         *args,
         **kwargs
@@ -46,29 +47,35 @@ class DDPMDiffmap(DDPM):
         ignore_keys = kwargs.pop("ignore_keys", [])
 
         # Instantiate modalities.
-        self.modalities_in = Modalities(modalities_config.modalities_in)
+        self.modalities_in = Modalities(modalities_config.modalities_in) if modalities_config.modalities_in is not None else Modalities([])
         self.modalities_out = Modalities(modalities_config.modalities_out)
-        self.modalities_cond = Modalities(modalities_config.modalities_cond)
 
         assert len(set([modality.channels_m for modality in self.modalities_in.modality_list])) <= 1, "Found different number of channels in input modalities, should be all equal."
         assert len(set([modality.channels_m for modality in self.modalities_out.modality_list])) <= 1, "Found different number of channels in output modalities."
         assert self.modalities_out.modality_list[0].channels_m == self.modalities_in.modality_list[0].channels_m, "Input and output modalities should have same individual channel counts."
         self.channels_m = self.modalities_out.modality_list[0].channels_m
+        self.output_geometry = any(isinstance(subset, GeometryModalities) for subset in self.modalities_out.subsets)
 
         # Instantiate model.
-        assert self.modalities_out.n_noisy_channels == self.modalities_in.n_noisy_channels
-        kwargs['channels'] = self.modalities_in.n_noisy_channels #enforce number of noisy channels for model
-        kwargs['unet_config']['params']['in_channels'] = self.modalities_in.n_channels #enforce number of input channels for model
-        if conditioning_key in ['concat', 'hybrid']:
-            kwargs['unet_config']['params']['in_channels'] += self.modalities_cond.n_channels
-        kwargs['unet_config']['params']['out_channels'] = self.modalities_out.n_channels #enforce number of input channels for model
-        model = DiffusionMapWrapper(
-            kwargs['unet_config'],
-            conditioning_key, kwargs['image_size'],
-            modalities_out=self.modalities_out,
-            compute_weights=compute_weights,
-            n_future=n_future,
-        ) #U-Net
+        if kwargs.get('unet_config', None) is not None:
+            assert self.modalities_out.n_noisy_channels == self.modalities_in.n_noisy_channels
+            kwargs['channels'] = self.modalities_in.n_noisy_channels #enforce number of noisy channels for model
+            kwargs['unet_config']['params']['in_channels'] = self.modalities_in.n_channels #enforce number of input channels for model
+            kwargs['unet_config']['params']['out_channels'] = self.modalities_out.n_channels #enforce number of input channels for model
+            model = DiffusionMapWrapper(
+                kwargs['unet_config'],
+                conditioning_key, kwargs['image_size'],
+                modalities_out=self.modalities_out,
+                compute_weights=compute_weights,
+                n_future=n_future,
+            ) #U-Net
+        if kwargs.get('dust3r_cfg', None) is not None:
+            model = Dust3rWrapper(
+                modalities_in=self.modalities_in,
+                modalities_out=self.modalities_out,
+                dust3r_cfg=kwargs['dust3r_cfg']
+            )
+
         super().__init__(conditioning_key=conditioning_key, *args, **kwargs, model=model)
 
         # Instantiate conditioning encoder.
@@ -93,12 +100,14 @@ class DDPMDiffmap(DDPM):
             assert self.parameterization == "x0", "No denoising mode only allowed with x0 parameterization mode"
             assert self.model.conditioning_key in ['concat', 'hybrid'], "No input modalities or conditioning for U-Net"
 
-        # Instantiate flowmap loss.
-        if flowmap_loss_config is not None:
-            self.flowmap_loss_wrapper = self.instantiate_flowmap_loss(flowmap_loss_config)
-        self.use_flowmap_loss = ('ctxt_depth' in self.modalities_out.ids_clean) and ('trgt_depth' in self.modalities_out.ids_clean)
-        self.use_denoising_loss = self.channels > 0
-        assert self.use_flowmap_loss or self.use_denoising_loss, "No loss is being optimized"
+        # Instantiate losses.
+        if isinstance(losses_config, DictConfig):
+            self.losses = [instantiate_from_config(losses_config)]
+        elif isinstance(losses_config, (ListConfig, list)):
+            self.losses = [instantiate_from_config(geometric_loss_config) for geometric_loss_config in losses_config]
+        else:
+            self.losses = list()
+        assert len(self.losses) > 0, "No loss is being optimized"
 
         # Enable not training - only viz. TODO remove?
         if self.unet_trainable is False:
@@ -138,19 +147,6 @@ class DDPMDiffmap(DDPM):
             assert config != '__is_unconditional__'
             model = instantiate_from_config(config)
             self.cond_stage_model = model #CLIP for conditioning
-
-    def instantiate_flowmap_loss(self, cfg_dict) -> FlowmapLossWrapper:
-        cfg = get_typed_root_config_diffmap(cfg_dict, DiffmapCfg)
-        # Set up the model.
-        model = FlowmapModelDiff(cfg.model)
-        losses = get_losses(cfg.loss)
-        flowmap_loss_wrapper = FlowmapLossWrapper(
-            cfg.model_wrapper,
-            cfg.cropping,
-            model,
-            losses,
-        )
-        return flowmap_loss_wrapper
     
     def configure_optimizers(self):
         lr = self.learning_rate
@@ -210,6 +206,7 @@ class DDPMDiffmap(DDPM):
         return opt
     
     def _get_denoise_row_from_list(self, samples, desc='', modality=None):
+        raise NotImplementedError()
         denoise_row = []
         for zd in tqdm(samples, desc=desc):
             denoise_row.append(zd.to(self.device))
@@ -248,7 +245,6 @@ class DDPMDiffmap(DDPM):
         self,
         batch: dict,
         input_ids: list[str] | str | None = None,
-        cond_ids: list[str] | str | None = None,
         force_c_encode: bool = False,
         return_original_cond: bool = False,
         bs: int = None, #batch size
@@ -264,30 +260,34 @@ class DDPMDiffmap(DDPM):
         # Prepare ids.
         if isinstance(input_ids, str):
             input_ids = [input_ids]
-        if isinstance(cond_ids, str):
-            cond_ids = [cond_ids]
-        input_modality_ids = sorted(list(set(input_ids))) if input_ids is not None else self.modalities_in.ids
-        cond_modality_ids = sorted(list(set(cond_ids))) if cond_ids is not None else self.modalities_cond.ids
-        assert len(input_modality_ids) > 0 or len(cond_modality_ids) > 0, 'No input and conditioning for model.'
+        if input_ids is not None:
+            if isinstance(input_ids, str):
+                input_ids = [input_ids]
+            noisy_modality_ids = sorted(list(set([id for id in input_ids if id in self.modalities_in.ids_denoised])))
+            noisy_modality_ids = sorted(list(set([id for id in input_ids if id in self.modalities_in.ids_clean])))
+        else:
+            noisy_modality_ids = self.modalities_in.ids_denoised
+            clean_modality_ids = self.modalities_in.ids_clean
+        assert len(noisy_modality_ids) + len(clean_modality_ids) > 0, 'No input and conditioning for model.'
 
-        # Get input modalities.
+        # Get noisy input modalities.
         x = list()
-        for modality_id in input_modality_ids:
+        for modality_id in noisy_modality_ids:
             x_m = self.get_input_modality(batch, modality_id) #image target clean x_0
             bs = min(default(bs, x_m.size(0)), x_m.size(0))
             x_m = x_m[:bs]
             x.append(x_m)
         if len(x) == 0: #only conditioning as input
-            for modality_id in cond_modality_ids:
+            for modality_id in clean_modality_ids:
                 b, _, h, w = self.get_input_modality(batch, modality_id).size()
                 bs = min(default(bs, b), b)
                 x.append(torch.zeros((bs, 0, h, w), device=self.device))
         x = torch.cat(x, dim=1).to(self.device)
 
-        # Get conditioning image.
+        # Get clean conditioning modalities.
         c, xc = list(), list()
-        if len(cond_modality_ids) > 0:
-            for id in cond_modality_ids:
+        if len(clean_modality_ids) > 0:
+            for id in clean_modality_ids:
                 x_m = self.get_input_modality(batch, id)
                 x_m = x_m[:bs].to(self.device)
                 
@@ -328,44 +328,39 @@ class DDPMDiffmap(DDPM):
             out.append(xc)
         return out
 
-    def get_input_flowmap(
-            self,
-            predicted: Float[Tensor, "sample clean_channels height width"],
-            flows: Flows,
-            correspondence_weights: Float[Tensor, "sample pair height width"] | None
-        ) -> tuple[dict[str, Tensor], dict[str, Tensor], Float[Tensor, "sample frame height width"], Float[Tensor, "sample pair height width"]]:
-        # Prepare depths.
-        predicted = rearrange(predicted, 'b (f c) h w -> b f c h w', c=self.channels_m)
-        depths = self.modalities_out.split_modalities_multiplicity(predicted, modality_ids=['ctxt_depth', 'trgt_depth'])
-        depths = torch.cat([
-            self.to_depth(depths['ctxt_depth']),
-            self.to_depth(depths['trgt_depth'])
-            ],
-            dim=1
+    def get_input_losses(
+        self,
+        x_start: Float[Tensor, "sample (frame channel) height width"],
+        cond: Float[Tensor, "sample channel height width"],
+        flows: Flows,
+        **kwargs
+    ) -> Dict:
+        """Prepare loss input batch.
+        """
+        noisy_input = rearrange(x_start, 'b (f c) h w -> b f c h w', c=self.channels_m)  
+        clean_input = rearrange(cond, 'b (f c) h w -> b f c h w', c=self.channels_m)
+        noisy_input_dict = self.modalities_in.split_modalities_multiplicity(noisy_input, dim=1, modality_ids=self.modalities_in.ids_denoised)
+        clean_input_dict = self.modalities_in.split_modalities_multiplicity(clean_input, dim=1, modality_ids=self.modalities_in.ids_clean)
+        input_batch = dict(
+            noisy_input_dict,
+            flows=flows,
+            **clean_input_dict
         )
-        B, F, H, W = depths.shape
 
-        # Prepare correspondence weights.
-        if correspondence_weights is None:
-            correspondence_weights = torch.ones((B,F-1,H,W), dtype=depths.dtype, device=depths.device)
-    
-        # if 'ctxt_camera' in batch and 'trgt_camera' in batch:
-        #     intrinsics_ctxt = torch.stack([cam.K for cam in batch['ctxt_camera']], dim=0).float() #(frame 3 3)
-        #     intrinsics_trgt = torch.stack([cam.K for cam in batch['trgt_camera']], dim=0).float() #(frame 3 3)
-        #     intrinsics = torch.stack([intrinsics_ctxt, intrinsics_trgt], dim=1).to(self.device) #(frame pair=1 3 3)
-        #     dummy_flowmap_batch['intrinsics'] = intrinsics
+        prefix = "train" if self.training else "val"
 
-        # Prepare flowmap dummy batch - TODO remove hack
-        dummy_flowmap_batch = {
-            "videos": torch.zeros((B, F, 3, H, W), dtype=torch.float32, device=self.device),
-            "indices": repeat(torch.arange(F, device=self.device), 'f -> b f', b=B),
-            "scenes": [""],
-            "datasets": [""],
-        }
+        losses_kwargs = dict(
+            batch=input_batch,
+            global_step=self.global_step,
+            x_start=x_start,
+            prefix=prefix,
+            diffusion_module=self
+        )
+        losses_kwargs.update(kwargs)
 
-        return dummy_flowmap_batch, flows, depths, correspondence_weights
+        return losses_kwargs
 
-    def training_step(self, batch, batch_idx):
+    def training_step(self, batch: Dict, batch_idx: int) -> float | None:
         for k in self.ucg_training:
             p = self.ucg_training[k]["p"]
             val = self.ucg_training[k]["val"]
@@ -392,110 +387,78 @@ class DDPMDiffmap(DDPM):
         else:
             return None
 
-    def shared_step(self, batch, **kwargs):
-        if self.use_flowmap_loss:
+    def shared_step(self, batch, **kwargs) -> tuple[float, Dict] | None:
+        if self.output_geometry:
             x, c, flows = self.get_input(batch, return_flows=True)
         else:
             x, c = self.get_input(batch)
             flows = None
-        loss = self(x, c, flows)
+
+        losses_kwargs = self.get_input_losses(x, c, flows)
+        
+        loss = self(x, c, losses_kwargs)
         return loss
     
-    def forward(self, x, c, flows: Flows | None = None, *args, **kwargs):
-        t = torch.randint(0, self.num_timesteps, (x.shape[0],), device=self.device).long()
+    def forward(
+        self,
+        x_start: Float[Tensor, "sample (frame channel) height width"],
+        cond: Float[Tensor, "sample channel height width"],
+        losses_kwargs: Dict,
+        *args, **kwargs
+    ) -> tuple[float, dict] | None:
+        t = torch.randint(0, self.num_timesteps, (x_start.shape[0],), device=self.device).long()
+        losses_kwargs['t'] = t # TODO - do it properly
+
         if self.model.conditioning_key is not None:
-            assert c is not None
+            assert cond is not None
             if self.cond_stage_trainable:
-                c = self.get_learned_conditioning(c)
+                cond = self.get_learned_conditioning(cond)
             if self.shorten_cond_schedule:  # TODO: drop this option
                 tc = self.cond_ids[t].to(self.device)
-                c = self.q_sample(x_start=c, t=tc, noise=torch.randn_like(c.float()))
-        return self.p_losses(x, c, t, flows, *args, **kwargs)
+                cond = self.q_sample(x_start=cond, t=tc, noise=torch.randn_like(cond.float()))
+        return self.p_losses(x_start, cond, t, losses_kwargs, *args, **kwargs)
 
     def p_losses(
         self,
         x_start: Float[Tensor, "sample (frame channel) height width"],
-        cond: dict[Float[Tensor, "sample channel height width"]],
-        t: Int[Tensor, f"sample"] ,
-        flows: Flows | None = None,
-        noise: Float[Tensor, "sample (frame channel) height width"]| None = None
-    ) -> tuple[float, dict] | None:
-        '''Compute diffusion and flowmap losses.
-        '''
+        cond: Float[Tensor, "sample channel height width"],
+        t: Int[Tensor, f"sample"],
+        losses_kwargs: Dict,
+        noise: Float[Tensor, "sample (frame channel) height width"] | None = None
+    ) -> tuple[float, Dict] | None:
+        """Compute diffusion and flowmap losses.
+        """
         loss_dict = {}
-        prefix = 'train' if self.training else 'val'        
-        loss_simple, loss_gamma, loss, loss_vlb  = 0, 0, 0, 0
-        logvar_t = self.logvar.to(self.device)
-        logvar_t = repeat(logvar_t[t], 'b -> b f', f=self.n_future)
-        logvar_t = rearrange(logvar_t, 'b f -> (b f)')
-        if self.learn_logvar:
-            loss_dict.update({'logvar': self.logvar.data.mean()})
-
-        # Enable not training - viz only TODO remove?
-        if not self.unet_trainable:
-            assert not any(p.requires_grad for p in self.model.parameters())
+        total_loss = 0 
+        prefix = "train" if self.training else "val"
 
         # Perform denoising step.
         noise = default(noise, lambda: torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
         denoised, clean, weights = self.apply_model(x_noisy, t, cond) # denoising step
 
-        # Compute flowmap loss.
-        if self.use_flowmap_loss:
-            dummy_flowmap_batch, flows, depths, correspondence_weights = self.get_input_flowmap(clean, flows, weights)
+        losses_kwargs['noise'] = noise # TODO - remove hack
 
-            loss_flowmap = self.flowmap_loss_wrapper(dummy_flowmap_batch, flows, depths, correspondence_weights, self.global_step)
-            loss += loss_flowmap
-            loss_dict.update({f'{prefix}_flowmap/loss': loss_flowmap.clone().detach()})
+        # Split all output modalities.
+        denoised = rearrange(denoised, 'b (f c) h w -> b f c h w', c=self.channels_m)
+        clean = rearrange(clean, 'b (f c) h w -> b f c h w', c=self.channels_m)
+        noisy_output_dict = self.modalities_out.split_modalities_multiplicity(denoised, dim=1, modality_ids=self.modalities_out.ids_denoised)
+        clean_output_dict = self.modalities_out.split_modalities_multiplicity(clean, dim=1, modality_ids=self.modalities_out.ids_clean)
+        output_dict = dict(noisy_output_dict, conf=weights, **clean_output_dict)
 
-        # Compute diffusion losses for every denoised modality.
-        if self.use_denoising_loss:
-            # Prepare diffusion loss inputs.
-            if self.parameterization == "x0":
-                denoising_target = x_start
-            elif self.parameterization == "eps":
-                denoising_target = noise
-            else:
-                raise NotImplementedError()
-
-            denoising_output = self.modalities_out.split_modalities(denoised, modality_ids=self.modalities_out.ids_denoised)
-            denoising_target = self.modalities_out.split_modalities(denoising_target, modality_ids=self.modalities_out.ids_denoised)
-            denoising_output = {k:rearrange(v, 'b (f c) h w -> (b f) c h w', c=self.channels_m) for k,v in denoising_output.items()}
-            denoising_target = {k:rearrange(v, 'b (f c) h w -> (b f) c h w', c=self.channels_m) for k,v in denoising_target.items()}
-            
-            for modality in self.modalities_out.denoised_modalities:
-                id_m = modality._id
-
-                # Simple diffusion loss.
-                loss_simple_m = self.get_loss(denoising_output[id_m], denoising_target[id_m], mean=False).mean([1, 2, 3])
-                loss_simple += loss_simple_m
-                loss_dict.update({f'{prefix}_{id_m}/loss_simple': loss_simple_m.clone().detach().mean()})
-                loss_gamma_m = loss_simple_m / torch.exp(logvar_t) + logvar_t
-                if self.learn_logvar:
-                    loss_dict.update({f'{prefix}_{id_m}/loss_gamma': loss_gamma_m.mean()})
-                loss_gamma += loss_gamma_m
-
-                # VLB loss.
-                loss_vlb_m = self.get_loss(denoising_output[id_m], denoising_target[id_m], mean=False).mean(dim=(1, 2, 3))
-                lvlb_weights = repeat(self.lvlb_weights[t], 'b -> b f', f=self.n_future)
-                lvlb_weights = rearrange(lvlb_weights, 'b f -> (b f)')
-                loss_vlb_m = (lvlb_weights * loss_vlb_m).mean()
-                loss_dict.update({f'{prefix}_{id_m}/loss_vlb': loss_vlb_m})
-                loss_vlb += loss_vlb_m
-
-                # Total loss.
-                loss_m = self.l_simple_weight * loss_gamma_m.mean() + (self.original_elbo_weight * loss_vlb_m)
-                loss_dict.update({f'{prefix}_{id_m}/loss': loss_m})
-                loss += loss_m
-        
-            # Log total diffusion losses.
-            loss_dict.update({f'{prefix}/loss_simple': loss_simple.mean()})
-            if self.learn_logvar:
-                loss_dict.update({f'{prefix}/loss_gamma': loss_gamma.mean()})
-            loss_dict.update({f'{prefix}/loss_vlb': loss_vlb})
+        for loss in self.losses:
+            loss_value, loss_metrics_dict = loss(
+                output_dict,
+                self.modalities_in,
+                self.modalities_out,
+                **losses_kwargs
+            )
+            total_loss += loss_value
+            loss_dict.update(loss_metrics_dict)
+        loss_dict.update({f'{prefix}/loss': total_loss})
 
         # Log input / output layers gradients.
-        if prefix == "train":
+        if self.training:
             try:
                 gradient_in = self.model.diffusion_model.input_blocks[0][0].weight._grad.abs().mean().clone().detach()
                 loss_dict.update({f'{prefix}/l1_gradient_convin': gradient_in})
@@ -508,10 +471,15 @@ class DDPMDiffmap(DDPM):
             except Exception:
                 pass
 
-        loss_dict.update({f'{prefix}/loss': loss})
+            try:
+                gradient_weights = self.model.corr_weighter_perpoint[4].weight._grad.abs().mean().clone().detach()
+                loss_dict.update({f'{prefix}/l1_gradient_weight_correspondence': gradient_weights})
+            except Exception:
+                pass
+        
         # Enable not training - viz only TODO remove?
         if self.unet_trainable is not False or not torch.is_grad_enabled():
-            return loss, loss_dict
+            return total_loss, loss_dict
         else:
             return None
 
@@ -585,8 +553,8 @@ class DDPMDiffmap(DDPM):
         Float[Tensor, 'batch channel height width'],
         Sample
     ]:
-        '''Denoising step t to estimate mean and variance of posterior distribution q(x_{t-1}|x_t, x_0, c)
-        '''
+        """Denoising step t to estimate mean and variance of posterior distribution q(x_{t-1}|x_t, x_0, c)
+        """
         t_in = t
         x_noisy = samples.x_denoised # xt
 
@@ -621,8 +589,8 @@ class DDPMDiffmap(DDPM):
         score_corrector=None,
         corrector_kwargs=None
     ) -> Sample:
-        '''Denoising step to estimate denoised sample x_{t-1} from noisy sample x_t.
-        '''
+        """Denoising step to estimate denoised sample x_{t-1} from noisy sample x_t.
+        """
         # Predicts posterior mean and variance with denoising step.
         model_mean, _, model_log_variance, samples = self.p_mean_variance(
             samples=samples, c=c, t=t, clip_denoised=clip_denoised,
@@ -712,8 +680,8 @@ class DDPMDiffmap(DDPM):
         x_T=None, verbose=True, callback=None, timesteps=None, mask=None,
         x0=None, img_callback=None, start_T=None, log_every_t=None
     ) -> Sample | tuple[Sample, list[Float[Tensor, '...']]]:
-        '''Monte Carlo sampling for backward process.
-        '''
+        """Monte Carlo sampling for backward process.
+        """
 
         if not log_every_t:
             log_every_t = self.log_every_t
@@ -765,8 +733,8 @@ class DDPMDiffmap(DDPM):
         self, cond, batch_size=16, return_intermediates=False, x_T=None,
         verbose=True, timesteps=None, mask=None, x0=None, shape=None,**kwargs
     ) -> Sample:
-        '''DDPM conditional generation.
-        '''
+        """DDPM conditional generation.
+        """
         # Prepare conditioning and noise.
         if shape is None:
             shape = (batch_size, self.channels, self.image_size, self.image_size)
@@ -788,7 +756,7 @@ class DDPMDiffmap(DDPM):
     @torch.no_grad()
     def sample_log(self, cond, batch_size, ddim, ddim_steps, **kwargs) -> tuple[Sample, list[Float[Tensor, '...']]]:
         # If diffusion model gets at least an input.
-        if self.modalities_in.n_channels > 0:
+        if self.modalities_in.n_noisy_channels > 0:
             if ddim:
                 ddim_sampler = DDIMSamplerDiffmap(self)
                 shape = (self.channels, self.image_size, self.image_size)
@@ -805,7 +773,7 @@ class DDPMDiffmap(DDPM):
             intermediates = torch.zeros((b, 0, h, w), device=self.device)
             t = torch.randint(0, self.num_timesteps, (cond.shape[0],), device=self.device).long()
             denoised, clean, weights = self.apply_model(dummy_x_noisy, t, cond)
-            samples = Sample(t=0, x_denoised=dummy_x_noisy, x_predicted=clean, weights=weights)
+            samples = Sample(t=0, x_denoised=denoised, x_predicted=clean, weights=weights)
 
         return samples, intermediates
     
@@ -830,6 +798,7 @@ class DDPMDiffmap(DDPM):
 
     @torch.no_grad()
     def get_unconditional_conditioning(self, batch_size, null_label=None):
+        raise NotImplementedError()
         if null_label is not None:
             xc = null_label
             if isinstance(xc, ListConfig):
@@ -845,16 +814,3 @@ class DDPMDiffmap(DDPM):
             raise NotImplementedError()
         c = repeat(c, '1 ... -> b ...', b=batch_size).to(self.device)
         return c
-
-    @torch.no_grad()
-    def to_rgb(self, x):
-        x = x.float()
-        if not hasattr(self, "colorize"):
-            self.colorize = torch.randn(3, x.shape[1], 1, 1).to(x)
-        x = nn.functional.conv2d(x, weight=self.colorize)
-        x = 2. * (x - x.min()) / (x.max() - x.min()) - 1.
-        return x
-
-    def to_depth(self, x: Float[Tensor, "sample frame 3 height width"]) -> Float[Tensor, "sample frame height width"]:
-        depths = x.mean(2)
-        return (depths / 1000).exp() + 0.01

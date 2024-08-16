@@ -1,0 +1,7 @@
+target: ldm.loss.diffusion_loss.DiffusionLoss
+
+params:
+  loss_cfg:
+    original_elbo_weight: 0.
+    l_simple_weight: 1.
+    loss_type: l2

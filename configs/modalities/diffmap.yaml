@@ -6,6 +6,11 @@ channels_m: 3
 modalities_in:
   - target: ldm.misc.modalities.RGBModalities
     params:
+      ctxt_cfg:
+        multiplicity: ${n_ctxt}
+        channels_m: ${channels_m}
+        denoised: False
+      
       trgt_cfg:
         multiplicity: ${n_future}
         channels_m: ${channels_m} 
@@ -45,13 +50,4 @@ modalities_out:
       trgt_cfg:
         multiplicity: ${n_future}
         channels_m: ${channels_m} 
-        denoised: False
-
-
-modalities_cond:
-  - target: ldm.misc.modalities.RGBModalities
-    params:
-      ctxt_cfg:
-        multiplicity: ${n_ctxt}
-        channels_m: ${channels_m}
         denoised: False
