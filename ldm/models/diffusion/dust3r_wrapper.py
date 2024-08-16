@@ -139,8 +139,7 @@ class Dust3rWrapper(
 ):
     def __init__(
         self,
-        noisy_modalities_in: Modalities,
-        clean_modalities_in: Modalities,
+        modalities_in: Modalities,
         modalities_out: Modalities,
         dust3r_cfg: DictConfig,
         conditioning_key: str = 'crossattn',
@@ -148,18 +147,13 @@ class Dust3rWrapper(
     ) -> None:
         pl.LightningModule.__init__(self)
         self.conditioning_key = conditioning_key
-        self.noisy_modalities_in = noisy_modalities_in 
-        self.clean_modalities_in = clean_modalities_in
+        self.modalities_in = modalities_in
         self.modalities_out = modalities_out
 
         # TODO - remove hack 
         assert any(
-            isinstance(subset, RGBModalities) and subset._past_modality is not None and subset._past_modality.multiplicity == 1
-            for subset in self.clean_modalities_in.subsets
-        )
-        assert any(
             isinstance(subset, RGBModalities) and subset._future_modality is not None and subset._future_modality.multiplicity == 1
-            for subset in self.noisy_modalities_in.subsets
+            for subset in self.modalities_in.subsets
         )
         assert any(
             isinstance(subset, GeometryModalities) and subset._future_modality is not None and subset._future_modality.multiplicity == 1 \
