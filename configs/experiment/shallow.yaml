@@ -2,7 +2,9 @@
 
 model:
   params:
-    unet_config:
+    wrapper_cfg:
       params:
-        model_channels: 64 #number of intermediate layer channels across the U-Net
-        attention_resolutions: [4, 2]
+        model_cfg:
+          params:
+            model_channels: 64 #number of intermediate layer channels across the U-Net
+            attention_resolutions: [4, 2]

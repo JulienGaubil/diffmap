@@ -4,7 +4,7 @@
 defaults:
   - /data: rooms
   - /diffusion_model@model: ddpm
-  - /diffusion_model/model@model.params.unet_config: unet
+  - /diffusion_model/model@params.wrapper_cfg: unet
   - /diffusion_model/scheduler@model.params.scheduler_config: linear_decrease
   - /loss@model.params.losses_config: [diffusion_loss,flowmap_loss] # flowmap loss config
   - /modalities@model.params.modalities_config: diffmap
@@ -37,14 +37,6 @@ model:
     unet_trainable: all  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn, false)
     compute_weights: True
     ckpt_path: null
-
-    unet_config:
-      params:
-        model_channels: 320 #number of intermediate layer channels across the U-Net
-        attention_resolutions: [ 4, 2, 1]
-        # use_spatial_transformer: True
-        # transformer_depth: 1
-        # context_dim: 768  #dim of crossattn conditioning
 
 lightning:
   find_unused_parameters: true

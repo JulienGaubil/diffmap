@@ -1,52 +1,85 @@
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
+
 from einops import rearrange
 from jaxtyping import Float, Int
+from typing import Literal
 from torch import Tensor
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, DictConfig
 from dataclasses import dataclass
 
 import torch.nn.functional as F
 from ldm.misc.util import instantiate_from_config
 from ldm.thirdp.flowmap.flowmap.model.backbone.backbone_midas import make_net
-from ldm.misc.modalities import Modalities
+from ldm.misc.modalities import Modalities, GeometryModalities
+from .model_wrapper import ModelWrapper
+
+# @dataclass
+# class UNetCfg:
+#     image_size: int
+#     model_channels: int
+#     attention_resolutions: list[int]
+#     num_res_blocks: int
+#     channel_mult: list[int]
+#     num_heads: int
+#     use_spatial_transformer: bool
+#     transformer_depth: int
+#     context_dim: int | None
+#     use_checkpoint: bool
+#     legacy: bool
+
+
+# @dataclass
+# class UNetWrapperCfg:
+#     model_cfg: OmegaConf
+#     conditioning_key: str
+#     image_size: int
+#     compute_weights: bool = False
+#     latent: bool = False
+#     n_future: int = 1
 
 
 #Class wrapper du U-Net, appelle son forward pass dans forward
-class DiffusionMapWrapper(pl.LightningModule):
+class UNetWrapper(ModelWrapper):
     def __init__(
         self,
-        diff_model_config: OmegaConf,
-        conditioning_key: str,
-        image_size: int,
+        modalities_in: Modalities,
         modalities_out: Modalities,
+        model_cfg: DictConfig,
+        image_size: int,
+        conditioning_key: Literal["crossattn", "concat", "hybrid"] | None = None, #defines the conditioning method
         compute_weights: bool = False,
         latent: bool = False,
-        n_future: int = 1,
         **kwargs
     ) -> None:
-        super().__init__()
+
+        assert modalities_out.n_noisy_channels == modalities_in.n_noisy_channels
+        model_cfg.params.in_channels = modalities_in.n_channels #enforce number of input channels for model
+        model_cfg.params.out_channels = modalities_out.n_channels #enforce number of input channels for model
+        super().__init__(modalities_in, modalities_out, model_cfg)
 
         self.conditioning_key = conditioning_key
         self.compute_weights = compute_weights
         self.latent = latent
-        self.n_future = n_future
-        self.modalities_out = modalities_out
-        assert self.conditioning_key in [None, 'concat', 'crossattn', 'hybrid', 'adm', 'hybrid-adm']
-
-        # Instantiate diffusion model.
-        self.diffusion_model = instantiate_from_config(diff_model_config)
 
         # Instantiate output heads.
         self.diff_out = self.diffusion_model.out
         self.diffusion_model.out = nn.Identity()
+
+        # MLP for weights regression from diffusion features.
         if self.compute_weights:
             model_channels = self.diffusion_model.model_channels
+            
+            geometric_modalities = [subset for subset in self.modalities_out.subsets if isinstance(subset, GeometryModalities)]
+            #TODO - remove hack
+            assert len(geometric_modalities) == 1
+            n_future = geometric_modalities[0]._future_modality.multiplicity if geometric_modalities[0]._future_modality is not None else 0
+            assert n_future > 0
+
             if self.latent:
                 image_size = 8 * image_size # TODO properly handle upsampling
-
-            self.corr_weighter_perpoint = make_net([model_channels, image_size, model_channels, self.n_future])
+            self.corr_weighter_perpoint = make_net([model_channels, image_size, model_channels, n_future])
 
     def forward(
         self,

@@ -1,17 +1,23 @@
-target: ldm.modules.diffusionmodules.openaimodel.UNetModel
-
-# Normally unused here.
+# Default params.
 image_size: 64
 
+target: ldm.models.diffusion.unet_wrapper.UNetWrapper
 params:
-  image_size: ${image_size} # unused
-  model_channels: 320 #number of intermediate layer channels across the U-Net
-  attention_resolutions: [4, 2, 1]
-  num_res_blocks: 2
-  channel_mult: [1, 2, 4, 4]
-  num_heads: 8
-  # use_spatial_transformer: True
-  # transformer_depth: 1
-  # context_dim: 768  #dim of crossattn conditioning
-  use_checkpoint: True
-  legacy: False
+  image_size: ${image_size}
+  conditioning_key: concat #defines the type of conditioning ie (crossattn, concat, hybrid)
+  compute_weights: True
+  latent: False
+  model_cfg:
+    target: ldm.modules.diffusionmodules.openaimodel.UNetModel
+    params:
+      image_size: ${image_size} # unused
+      model_channels: 320 #number of intermediate layer channels across the U-Net
+      attention_resolutions: [4, 2, 1]
+      num_res_blocks: 2
+      channel_mult: [1, 2, 4, 4]
+      num_heads: 8
+      # use_spatial_transformer: True
+      # transformer_depth: 1
+      # context_dim: 768  #dim of crossattn conditioning
+      use_checkpoint: True
+      legacy: False

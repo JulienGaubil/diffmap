@@ -1,10 +1,8 @@
 from jaxtyping import Int
 from omegaconf import DictConfig
-from typing import Literal, Dict
+from typing import Dict
 
 from .ddpm import *
-from .diffusion_wrapper import DiffusionMapWrapper
-from .dust3r_wrapper import Dust3rWrapper
 from ldm.thirdp.flowmap.flowmap.flow import Flows
 from ldm.models.diffusion.ddim import DDIMSamplerDiffmap
 from ldm.models.diffusion.types import Sample
@@ -23,28 +21,18 @@ class DDPMDiffmap(DDPM):
         modalities_config: ListConfig,
         num_timesteps_cond: int | None = None,
         cond_stage_trainable: bool = False,
-        concat_mode: bool = True,
         cond_stage_forward = None,
-        conditioning_key: Literal["crossattn", "concat", "hybrid"] | None = None, #defines the conditioning method
         unet_trainable: bool = True,
         n_future: int = 1,
         n_ctxt: int = 1,
+        wrapper_cfg: DictConfig | None = None,
         losses_config: DictConfig | ListConfig | list | None = None,
-        compute_weights: bool = False,
         *args,
         **kwargs
     ) -> None:
 
         self.num_timesteps_cond = default(num_timesteps_cond, 1)
         assert self.num_timesteps_cond <= kwargs['timesteps']
-
-        # For backwards compatibility with class DiffusionMapWrapper.
-        if conditioning_key is None:
-            conditioning_key = 'concat' if concat_mode else 'crossattn'
-        if cond_stage_config == '__is_unconditional__':
-            conditioning_key = None
-        ckpt_path = kwargs.pop("ckpt_path", None)
-        ignore_keys = kwargs.pop("ignore_keys", [])
 
         # Instantiate modalities.
         self.modalities_in = Modalities(modalities_config.modalities_in) if modalities_config.modalities_in is not None else Modalities([])
@@ -56,27 +44,24 @@ class DDPMDiffmap(DDPM):
         self.channels_m = self.modalities_out.modality_list[0].channels_m
         self.output_geometry = any(isinstance(subset, GeometryModalities) for subset in self.modalities_out.subsets)
 
-        # Instantiate model.
-        if kwargs.get('unet_config', None) is not None:
-            assert self.modalities_out.n_noisy_channels == self.modalities_in.n_noisy_channels
-            kwargs['channels'] = self.modalities_in.n_noisy_channels #enforce number of noisy channels for model
-            kwargs['unet_config']['params']['in_channels'] = self.modalities_in.n_channels #enforce number of input channels for model
-            kwargs['unet_config']['params']['out_channels'] = self.modalities_out.n_channels #enforce number of input channels for model
-            model = DiffusionMapWrapper(
-                kwargs['unet_config'],
-                conditioning_key, kwargs['image_size'],
-                modalities_out=self.modalities_out,
-                compute_weights=compute_weights,
-                n_future=n_future,
-            ) #U-Net
-        if kwargs.get('dust3r_cfg', None) is not None:
-            model = Dust3rWrapper(
+        # For backwards compatibility with class DDPM.
+        ckpt_path = kwargs.pop("ckpt_path", None)
+        ignore_keys = kwargs.pop("ignore_keys", [])
+
+        # Instantiate diffusion model.
+        if wrapper_cfg is not None:
+            model = instantiate_from_config(
+                wrapper_cfg,
                 modalities_in=self.modalities_in,
                 modalities_out=self.modalities_out,
-                dust3r_cfg=kwargs['dust3r_cfg']
+                diffusion_module=self
             )
+            unet_config = None
+        else:
+            model = None
+            assert kwargs.get('unet_config', None) is not None
 
-        super().__init__(conditioning_key=conditioning_key, *args, **kwargs, model=model)
+        super().__init__(unet_config=unet_config, *args, **kwargs, model=model)
 
         # Instantiate conditioning encoder.
         self.cond_stage_trainable = cond_stage_trainable
@@ -96,7 +81,7 @@ class DDPMDiffmap(DDPM):
         self.n_future = n_future
         self.n_ctxt = n_ctxt
         # Running without diffusion.
-        if self.channels == 0:
+        if self.modalities_in.n_noisy_channels == 0:
             assert self.parameterization == "x0", "No denoising mode only allowed with x0 parameterization mode"
             assert self.model.conditioning_key in ['concat', 'hybrid'], "No input modalities or conditioning for U-Net"
 
@@ -737,7 +722,7 @@ class DDPMDiffmap(DDPM):
         """
         # Prepare conditioning and noise.
         if shape is None:
-            shape = (batch_size, self.channels, self.image_size, self.image_size)
+            shape = (batch_size, self.modalities_in.n_noisy_channels, self.image_size, self.image_size)
         if cond is not None:
             if isinstance(cond, dict):
                 cond = {key: cond[key][:batch_size] if not isinstance(cond[key], list) else
@@ -759,7 +744,7 @@ class DDPMDiffmap(DDPM):
         if self.modalities_in.n_noisy_channels > 0:
             if ddim:
                 ddim_sampler = DDIMSamplerDiffmap(self)
-                shape = (self.channels, self.image_size, self.image_size)
+                shape = (self.modalities_in.n_noisy_channels, self.image_size, self.image_size)
                 samples, intermediates = ddim_sampler.sample(ddim_steps, batch_size,
                                                             shape, cond, verbose=False, **kwargs)
 
