@@ -60,6 +60,7 @@ class DDPMDiffmap(DDPM):
         else:
             model = None
             assert kwargs.get('unet_config', None) is not None
+            unet_config = kwargs.pop('unet_config')
 
         super().__init__(unet_config=unet_config, *args, **kwargs, model=model)
 

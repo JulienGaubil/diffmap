@@ -4,10 +4,10 @@
 defaults:
   - /data: rooms
   - /diffusion_model@model: ddpm
-  - /diffusion_model/model@params.wrapper_cfg: unet
   - /diffusion_model/scheduler@model.params.scheduler_config: linear_decrease
   - /loss@model.params.losses_config: [diffusion_loss,flowmap_loss] # flowmap loss config
   - /modalities@model.params.modalities_config: diffmap
+  - override /diffusion_model/model@model.params.wrapper_cfg: unet
 
 # Overrides image size in data and model children configs.
 scenes: '000001'

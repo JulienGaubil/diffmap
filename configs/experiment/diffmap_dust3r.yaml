@@ -4,10 +4,10 @@
 defaults:
   - /data: rooms
   - /diffusion_model@model: ddpm
-  - /diffusion_model/model@model.params.dust3r_cfg: dust3r
   - /diffusion_model/scheduler@model.params.scheduler_config: linear_decrease
   - /loss@model.params.losses_config: [diffusion_loss,dust3r_loss] # dust3r loss config
   - /modalities@model.params.modalities_config: diffmap_dust3r
+  - override /diffusion_model/model@model.params.wrapper_cfg: dust3r
 
 # Overrides image size in data and model children configs.
 scenes: '000001'
@@ -35,8 +35,6 @@ model:
     conditioning_key: crossattn #defines the type of conditioning ie (crossattn, concat, hybrid)
     parameterization: eps
     unet_trainable: all  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn, false)
-    ckpt_path: null
-    unet_config: null
 
     cond_stage_config:
       target: torch.nn.Identity

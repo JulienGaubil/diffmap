@@ -1,26 +1,30 @@
 # Default params used.
 image_size: 224
 
+target: ldm.models.diffusion.dust3r_wrapper.Dust3rWrapper
 params:
-  pos_embed: RoPE100
-  img_size: 
-    - ${image_size}
-    - ${image_size}
-  head_type: linear
-  output_mode: pts3d
-  depth_mode:
-    - exp
-    - -.inf
-    - .inf
-  conf_mode:
-    - exp
-    - 1
-    - .inf
-  enc_embed_dim: 1024
-  enc_depth: 24
-  enc_num_heads: 16
-  dec_embed_dim: 768
-  dec_depth: 12
-  dec_num_heads: 12
-  landscape_only: True
   ckpt_path: null
+  model_cfg:
+    target: ldm.modules.diffusionmodules.dust3rmodel.Dust3rModel
+    params:
+      pos_embed: RoPE100
+      img_size: 
+        - ${image_size}
+        - ${image_size}
+      head_type: linear
+      output_mode: pts3d
+      depth_mode:
+        - exp
+        - -.inf
+        - .inf
+      conf_mode:
+        - exp
+        - 1
+        - .inf
+      enc_embed_dim: 1024
+      enc_depth: 24
+      enc_num_heads: 16
+      dec_embed_dim: 768
+      dec_depth: 12
+      dec_num_heads: 12
+      landscape_only: True
