@@ -45,7 +45,7 @@ class CO3DDiffmapDataset(DiffmapDataset, Dataset):
         self.n_future = n_future
         self.n_ctxt = n_ctxt
         self.flip_trajectories = flip_trajectories
-        self.flow_statistics = FLOW_STATISTICS.get(self.stride, (0,1)) if normalize_flow else (0,1) #(mean, std)
+        self.flow_statistics = FLOW_STATISTICS.get(self.stride, (0.0, 1.0)) if normalize_flow else (0.0, 1.0) #(mean, std)
 
         # Load categories.
         if categories is not None:
