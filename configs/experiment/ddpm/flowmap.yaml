@@ -15,7 +15,7 @@ model:
     - depth_ctxt
     ckpt_path: null
 
-    unet_config:
+    wrapper_cfg:
       params:
         in_channels: 3 #number of input channels U-Net, should be multiple of 4 (original size)
         out_channels: 6 #number of output channels U-Net, should be multiple of 4 (original size)

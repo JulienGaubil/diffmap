@@ -37,6 +37,7 @@ lightning:
     # check_val_every_n_epoch: null #frequency of validation in epochs
     # val_check_interval: null #frequency of validation in iterations
     # limit_val_batches: 0.0  # to disable validation
+    # log_every_n_steps: 50 # metrics logging frequency
     num_sanity_val_steps: 0
     accumulate_grad_batches: 4
     max_epochs: 4000 #max number of epochs performed, 1000 is the default
