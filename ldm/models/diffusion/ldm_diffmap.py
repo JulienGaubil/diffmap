@@ -1,7 +1,7 @@
 from .ddpm import *
-from .diffusion_wrapper import DiffusionMapWrapper
+from .unet_wrapper import DiffusionMapWrapper
 
-from ldm.modules.flowmap.flow import Flows
+from ldm.thirdp.flowmap.flowmap.flow import Flows
 from ldm.models.diffusion.ddim import DDIMSamplerDiffmap
 from ldm.models.diffusion.types import Sample, DiffusionOutput
 
