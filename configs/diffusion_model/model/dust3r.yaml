@@ -1,5 +1,4 @@
 # Default params used.
-image_size: 224
 
 target: ldm.models.diffusion.dust3r_wrapper.Dust3rWrapper
 params:
@@ -9,8 +8,8 @@ params:
     params:
       pos_embed: RoPE100
       img_size: 
-        - ${image_size}
-        - ${image_size}
+        - ${data.image_size}
+        - ${data.image_size}
       head_type: linear
       output_mode: pts3d
       depth_mode:

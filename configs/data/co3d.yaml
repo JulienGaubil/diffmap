@@ -12,8 +12,8 @@ n_ctxt: 1
 normalize_flow: True
 
 params:
-  batch_size: 4
-  num_workers: 4
+  batch_size: 16
+  num_workers: 16
   num_val_workers: 0 # Avoid a weird val dataloader issue
   shuffle_val_dataloader: True
   collate_fn: ldm.data.datamodule.collate_fn_diffmap
@@ -23,22 +23,22 @@ params:
     params:
     # Merge dataset_params with new params fields
       root_dir: datasets/CO3Dv2
-      scenes: ${scenes}
-      val_scenes: ${val_scenes}
-      categories: ${categories}
-      stride: ${stride}
-      n_future: ${n_future}
-      n_ctxt: ${n_ctxt}
-      flip_trajectories: ${flip_trajectories}
-      normalize_flow: ${normalize_flow}
+      scenes: ${data.scenes}
+      val_scenes: ${data.val_scenes}
+      categories: ${data.categories}
+      stride: ${data.stride}
+      n_future: ${data.n_future}
+      n_ctxt: ${data.n_ctxt}
+      flip_trajectories: ${data.flip_trajectories}
+      normalize_flow: ${data.normalize_flow}
       image_transforms:
       - target: torchvision.transforms.Resize
         params:
-          size: ${image_size}  #train img resolution
+          size: ${data.image_size}  #train img resolution
           interpolation: 3
       - target: torchvision.transforms.CenterCrop
         params:
-          size: ${image_size}
+          size: ${data.image_size}
       split: train
 
   validation: #params val dataset
@@ -46,22 +46,22 @@ params:
     params: 
     # Merge dataset_params with new params fields
       root_dir: datasets/CO3Dv2
-      scenes: ${scenes}
-      val_scenes: ${val_scenes}
-      categories: ${categories}
-      stride: ${stride}
-      n_future: ${n_future}
-      n_ctxt: ${n_ctxt}
-      flip_trajectories: ${flip_trajectories}
-      normalize_flow: ${normalize_flow}
+      scenes: ${data.scenes}
+      val_scenes: ${data.val_scenes}
+      categories: ${data.categories}
+      stride: ${data.stride}
+      n_future: ${data.n_future}
+      n_ctxt: ${data.n_ctxt}
+      flip_trajectories: ${data.flip_trajectories}
+      normalize_flow: ${data.normalize_flow}
       image_transforms:
       - target: torchvision.transforms.Resize
         params:
-          size: ${image_size}  #train img resolution
+          size: ${data.image_size}  #train img resolution
           interpolation: 3
       - target: torchvision.transforms.CenterCrop
         params:
-          size: ${image_size}
+          size: ${data.image_size}
       split: validation
   
   test: null

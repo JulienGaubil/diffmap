@@ -33,7 +33,7 @@ params:
 
     cropping:
       image_shape:
-        - ${image_size}
-        - ${image_size}
+        - ${data.image_size}
+        - ${data.image_size}
       flow_scale_multiplier: 4
       patch_size: 32 #a modifier?

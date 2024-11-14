@@ -6,7 +6,8 @@ defaults:
   - /diffusion_model/autoencoder@model: vae_ldm
 
 # Overrides image size in data and model children configs.
-image_size: 128
+data:
+  image_size: 128
 
 model:
   base_learning_rate: 4.5e-06

@@ -4,27 +4,12 @@ defaults:
   - override /data: co3d
   - override /diffusion_model/scheduler@model.params.scheduler_config: linear_decrease
 
-# Anchors with references.
-image_size: 64
-categories: 'hydrant'
-scenes: null
-val_scenes: ['421_58422_112570','421_58428_112592','421_58448_112675','421_58453_112679','421_58481_112925','423_58828_113391','423_58839_113399','423_58880_113838','423_58894_113885','423_58949_114399']
 
 data:
-  params:
-    batch_size: 16
-    num_workers: 16
-    train:
-      params:
-        categories: ${categories}
-        scenes: ${scenes}
-        val_scenes: ${val_scenes}
-    validation:
-      params:
-          categories: ${categories}
-          scenes: ${scenes}
-          val_scenes: ${val_scenes}
-    test: null
+  image_size: 64
+  categories: 'hydrant'
+  scenes: null
+  val_scenes: ['421_58422_112570','421_58428_112592','421_58448_112675','421_58453_112679','421_58481_112925','423_58828_113391','423_58839_113399','423_58880_113838','423_58894_113885','423_58949_114399']
 
 model:
   params:

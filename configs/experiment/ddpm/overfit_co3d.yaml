@@ -3,23 +3,11 @@
 defaults:
   - override /data: co3d
 
-# Anchors with references.
-image_size: 64
-categories: 'hydrant'
-scenes: '106_12648_23157'
-val_scenes: null
-
 data:
-  params:
-    batch_size: 16
-    num_workers: 16
-    train:
-      params:
-        categories: ${categories}
-        scenes: ${scenes}
-        val_scenes: ${val_scenes}
-    validation: null
-    test: null
+  image_size: 64
+  categories: 'hydrant'
+  scenes: '106_12648_23157'
+  val_scenes: null
 
 model:
   params:

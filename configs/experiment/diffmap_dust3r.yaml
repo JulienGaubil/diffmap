@@ -9,22 +9,22 @@ defaults:
   - /modalities@model.params.modalities_config: diffmap_dust3r
   - override /diffusion_model/model@model.params.wrapper_cfg: dust3r
 
-# Overrides image size in data and model children configs.
-scenes: '000001'
-val_scenes: null
-image_size: 224
-n_future: 1
-n_ctxt: 1
-channels_m: 3
-stride: 1
-flip_trajectories: False
-normalize_flow: True
-
 data:
+  scenes: '000001'
+  val_scenes: null
+  image_size: 224
+  n_future: 1
+  n_ctxt: 1
+  stride: 1
+  flip_trajectories: False
+  normalize_flow: True
   params:
     batch_size: 16
     num_workers: 8
     test: null
+
+modalities:
+  channels_m: 3
 
 model:
   params:

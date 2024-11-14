@@ -13,7 +13,7 @@ params:
   timesteps: 1000 #sampling timesteps in forward/backward
   first_stage_key: "trgt" #key in batch for the noised signal
   cond_stage_key: "ctxt" #key in batch for the clean conditioning signal
-  image_size: ${divide:${image_size}, 8} #sampling resolution = image_size/8
+  image_size: ${divide:${data.image_size}, 8} #sampling resolution = image_size/8
   channels: 8 #number of noisy channels as input of U-Net
   cond_stage_trainable: false   # Note: different from the one we trained before
   conditioning_key: concat #defines the type of conditioning ie (crossattn, concat, hybrid)

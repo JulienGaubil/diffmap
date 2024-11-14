@@ -9,34 +9,29 @@ defaults:
   - /modalities@model.params.modalities_config: diffmap
   - override /diffusion_model/model@model.params.wrapper_cfg: unet
 
-# Overrides image size in data and model children configs.
-scenes: '000001'
-val_scenes: null
-image_size: 64
-n_future: 1
-n_ctxt: 1
-channels_m: 3
-stride: 1
-flip_trajectories: False
-normalize_flow: True
-
 data:
+  scenes: '000001'
+  val_scenes: null
+  image_size: 64
+  n_future: 1
+  n_ctxt: 1
+  stride: 1
+  flip_trajectories: False
+  normalize_flow: True
+
   params:
     batch_size: 16
     num_workers: 8
     test: null
 
+modalities:
+  channels_m: 3
+
 model:
   params:
-    log_every_t: 200 #when logging generated samples, frequency of logging for intermediate samples  
-    timesteps: 1000 #sampling timesteps in forward/backward
-    n_future: ${n_future}
-    n_ctxt: ${n_ctxt}
     conditioning_key: concat #defines the type of conditioning ie (crossattn, concat, hybrid)
-    parameterization: eps
     unet_trainable: all  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn, false)
     compute_weights: True
-    ckpt_path: null
 
 lightning:
   find_unused_parameters: true

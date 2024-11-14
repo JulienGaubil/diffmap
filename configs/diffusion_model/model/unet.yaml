@@ -1,16 +1,15 @@
 # Default params.
-image_size: 64
 
 target: ldm.models.diffusion.unet_wrapper.UNetWrapper
 params:
-  image_size: ${image_size}
+  image_size: ${data.image_size}
   conditioning_key: concat #defines the type of conditioning ie (crossattn, concat, hybrid)
   compute_weights: True
   latent: False
   model_cfg:
     target: ldm.modules.diffusionmodules.openaimodel.UNetModel
     params:
-      image_size: ${image_size} # unused
+      image_size: ${data.image_size} # unused
       model_channels: 320 #number of intermediate layer channels across the U-Net
       attention_resolutions: [4, 2, 1]
       num_res_blocks: 2

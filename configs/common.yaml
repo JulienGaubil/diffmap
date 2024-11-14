@@ -1,25 +1,3 @@
-# Overrides image size in data and model children configs.
-image_size: 512
-n_future: 1
-n_ctxt: 1
-channels_m: 3
-stride: 1
-flip_trajectories: False
-normalize_flow: True
-
-data:
-  params:
-    collate_fn: ldm.data.datamodule.collate_fn_diffmap
-    train:
-      params:
-        scenes: null
-        val_scenes: null
-    validation:
-      params:
-        scenes: null
-        val_scenes: null
-
-
 lightning:
 
   modelcheckpoint:
