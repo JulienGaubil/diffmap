@@ -31,6 +31,8 @@ from ldm.visualization import filter_depth
 from ldm.thirdp.flowmap.flowmap.flow.flow_predictor import Flows
 from ldm.misc.projection import compute_flow_projection, compute_consistency_mask
 from ldm.misc.modalities import Modality, Modalities
+from ldm.models.diffusion.ddpm_diffmap import DDPMDiffmap
+from ldm.models.diffusion.ddpm import DDPM
 from ldm.visualization.utils import *
 
 # Enable arithmetic operations in .yaml file with keywords "divide" or "multiply" or "linear".
@@ -72,11 +74,11 @@ def print_tensor_dict(dictionnary: dict, root: bool = True) -> dict:
 
 
 def prepare_batch(
-        modalities_cond: Modalities,
-        modalities_out: Modalities,
-        logs_data_dict: dict,
-        batch: dict,
-    ) -> dict:
+    modalities_in: Modalities,
+    modalities_out: Modalities,
+    logs_data_dict: dict,
+    batch: dict,
+) -> dict:
     '''Put last RGB sample in input batch for autoregressive sampling.
     '''
     # modalities = Modalities(modalities_list)
@@ -84,7 +86,11 @@ def prepare_batch(
     prev_sample = get_value(logs_data_dict, ['rgb', 'trgt', 'sample']) # list | None
     prev_conditioning = get_value(logs_data_dict, ['rgb', 'ctxt', 'conditioning']) # list | None
 
-    if not (modalities_cond.ids == ['ctxt_rgb'] and 'trgt_rgb' in modalities_out.ids and prev_sample is not None and prev_conditioning is not None and 'ctxt_rgb' in batch.keys()):
+    if not (modalities_in.ids_clean == ['ctxt_rgb'] and \
+        'trgt_rgb' in modalities_out.ids and \
+        prev_sample is not None and \
+        prev_conditioning is not None and \
+        'ctxt_rgb' in batch.keys()):
         raise NotImplementedError('Autoregressive sampling only implemented for RGB conditioning.')
     
     # Replace last sample in conditioning file.
@@ -179,7 +185,7 @@ def sample(config: DictConfig) -> None:
     seed_everything(config.experiment_cfg.seed)
 
     # model
-    model = instantiate_from_config(config.model)
+    model: DDPMDiffmap = instantiate_from_config(config.model)
     model.cpu()
 
     if not config.experiment_cfg.finetune_from == "":
@@ -317,8 +323,8 @@ def sample(config: DictConfig) -> None:
     dataloader_val = data.val_dataloader()
 
     # Visualization paths.
-    viz_path_videos = Path(os.path.join('visualizations/medias/sampling', dataset_name, scene, 'modalities'))
-    viz_path_pc = Path(os.path.join('visualizations/pointclouds', dataset_name, scene))
+    viz_path_videos = Path(os.path.join('sampling_outputs/videos', dataset_name, scene))
+    viz_path_pc = Path(os.path.join('sampling_outputs/pointclouds', dataset_name, scene))
     os.makedirs(viz_path_videos, exist_ok=True)
     os.makedirs(viz_path_pc, exist_ok=True)
 
@@ -339,13 +345,11 @@ def sample(config: DictConfig) -> None:
     # Sampling loop.
     for i, batch in tqdm(enumerate(dataloader_val)):
 
-        if i % config.data.params.validation.params.stride == 0: # TODO - handle so that it actually corresponds to index even when bs neq 1
-            print(f'Frame indices val batch {i} : ', batch['indices'])
-
+        if i % config.data.params.validation.params.stride == 0 and i < config.experiment_cfg.n_samples_max: # TODO - handle so that it actually corresponds to index even when bs neq 1
             # Prepare input batch.
             if i > 0 and config.experiment_cfg.autoregressive:
                 batch_for_model = prepare_batch(
-                    model.modalities_cond,
+                    model.modalities_in,
                     model.modalities_out,
                     logs_data,
                     batch,
@@ -361,8 +365,8 @@ def sample(config: DictConfig) -> None:
             )
             x_log = rearrange(x, 'b (f c) h w -> b f c h w', c=model.channels_m)
             xc_log = rearrange(xc, 'b (f c) h w -> b f c h w', c=model.channels_m)
-            x_split = model.modalities_in.split_modalities_multiplicity(x_log)
-            xc_split = model.modalities_cond.split_modalities_multiplicity(xc_log)
+            x_split = model.modalities_in.split_modalities_multiplicity(x_log, modality_ids=model.modalities_in.ids_denoised)
+            xc_split = model.modalities_in.split_modalities_multiplicity(xc_log, modality_ids=model.modalities_in.ids_clean)
 
             # Sample model.
             with ema_scope("Sampling"):
@@ -379,29 +383,11 @@ def sample(config: DictConfig) -> None:
             samples_diffusion = model.modalities_out.split_modalities_multiplicity(samples_diffusion, modality_ids=model.modalities_out.ids_denoised)
             samples_prediction = model.modalities_out.split_modalities_multiplicity(samples_prediction, modality_ids=model.modalities_out.ids_clean)
             samples = dict(samples_diffusion, **samples_prediction)
-
-            # Prepare and log conditioning visualizations and raw data.
-            for modality in model.modalities_cond:
-                if not modality in model.modalities_in:
-                    modalities.append(modality)
-                    x_m = xc_split[modality._id].detach().cpu().clone()
-                    kwargs = copy.deepcopy(log_images_kwargs)
-                    visualization = prepare_visualization(x_m[:,-1:], modality, **kwargs) # TODO - remove hack, subsamples only last frame for viz / make grid
-                    keys = [modality.modality, modality.name, 'conditioning']
-                    set_nested(
-                        logs_vis,
-                        keys,
-                        visualization
-                    )
-                    set_nested(
-                        logs_data,
-                        keys,
-                        x_m
-                    )
             
             # Log input visualizations and raw data.
-            for modality in model.modalities_in:
-                modalities.append(modality)
+            for modality in model.modalities_in.denoised_modalities:
+                if modality not in modalities:
+                    modalities.append(modality)
                 x_m = x_split[modality._id].detach().cpu().clone()
                 kwargs = copy.deepcopy(log_images_kwargs)
                 visualization = prepare_visualization(x_m[:,-1:], modality, **kwargs) # TODO - remove hack, subsamples only last frame for viz / make grid
@@ -419,7 +405,8 @@ def sample(config: DictConfig) -> None:
 
             # Log samples and gt and raw data.
             for modality in model.modalities_out:
-                modalities.append(modality)
+                if modality not in modalities:
+                    modalities.append(modality)
                 sample_m = samples[modality._id].detach().cpu().clone()
                 kwargs = copy.deepcopy(log_images_kwargs)
                 kwargs['sample'] = True
@@ -436,7 +423,7 @@ def sample(config: DictConfig) -> None:
                     sample_m
                 )
 
-                if modality._id in batch.keys() and modality not in model.modalities_in: #gt
+                if modality._id in batch.keys() and modality not in model.modalities_in.denoised_modalities: #gt
                     x_m = model.get_input_modality(batch, modality._id).detach().cpu().clone()
                     x_m = rearrange(x_m, 'b (f c) h w -> b f c h w', c=modality.channels_m)
                     kwargs = copy.deepcopy(log_images_kwargs)
@@ -452,11 +439,32 @@ def sample(config: DictConfig) -> None:
                         keys,
                         x_m
                     )
+            
+            # Prepare and log conditioning visualizations and raw data.
+            for modality in model.modalities_in.clean_modalities:
+                if not modality in model.modalities_out:
+                    if modality not in modalities:
+                        modalities.append(modality)
+                    x_m = xc_split[modality._id].detach().cpu().clone()
+                    kwargs = copy.deepcopy(log_images_kwargs)
+                    visualization = prepare_visualization(x_m[:,-1:], modality, **kwargs) # TODO - remove hack, subsamples only last frame for viz / make grid
+                    keys = [modality.modality, modality.name, 'conditioning']
+                    set_nested(
+                        logs_vis,
+                        keys,
+                        visualization
+                    )
+                    set_nested(
+                        logs_data,
+                        keys,
+                        x_m
+                    )
 
             # Log correspondence weight samples.
             if weights is not None:
                 modality_weight = Modality(name='correspondence', modality='weight', multiplicity=weights.size(1), channels_m=0, denoised=False)
-                modalities.append(modality_weight)
+                if modality_weight not in modalities:
+                    modalities.append(modality_weight)
                 weights = weights.detach().cpu().clone()
                 kwargs = copy.deepcopy(log_images_kwargs)
                 visualization = prepare_visualization(weights[:,-1:], modality_weight, **kwargs) # TODO - remove hack, subsamples only last frame for viz, concatenate everything / make grid
@@ -779,35 +787,6 @@ def sample(config: DictConfig) -> None:
                     frames,
                     fps=1
                 )
-
-
-        # # Save correspondence masks samples.
-        # for keys in product(['gt', 'sampled'], ['ctxt', 'trgt'], ['correspondence_weights']):
-        #     value = get_value(logs, keys)
-        #     if value is not None:
-        #         viz_images = prepare_visualization(value, keys)
-        #         video = (viz_images * 255).type(torch.uint8)
-        #         torchvision.io.write_video(os.path.join(viz_path_videos, f'{"_".join(keys)}.mp4'), video, fps=5)
-        # try:
-        #     from visualizations.code.create_figure_sampling import create_video
-        #     create_video(viz_dict, viz_path_videos.parent)
-        #     # os.system(f'python -m visualizations.code.create_figure_sampling {viz_path_videos.parent}')
-        # except ModuleNotFoundError:
-        #     pass
-
-        # # Compute consistency mask.
-        # for key in ['gt', 'sampled']:
-        #     fwd_flows_gt = get_value(logs, [key, 'flows', 'forward'])
-        #     src_im_gt = rearrange(get_value(logs, ['gt', 'ctxt', 'rgbs']), 'n h w c -> n c h w')
-        #     trgt_im_gt = rearrange(get_value(logs, ['gt', 'trgt', 'rgbs']), 'n h w c -> n c h w')
-        #     masks = torch.stack(
-        #         [compute_consistency_mask(src_im_gt[k], trgt_im_gt[k], fwd_flows_gt[k]) for k in range(fwd_flows_gt.size(0))],
-        #         dim = 0
-        #     )
-
-        #     video = (repeat(masks, 'n h w -> n h w c', c=3) * 255).type(torch.uint8)
-        #     torchvision.io.write_video(os.path.join(viz_path_videos, f'{key}_consistency_masks.mp4'), video, fps=5)
-
             
 if __name__ == "__main__":
     sample()

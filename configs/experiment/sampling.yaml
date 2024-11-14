@@ -2,24 +2,25 @@
 
 # Defines default config.
 defaults:
-  - /data: rooms
+  - /data: co3d
   - /diffusion_model@model: ddpm
-  - /diffusion_model/model@model.params.wrapper_cfg: unet
   - /loss@model.params.losses_config: [diffusion_loss,flowmap_loss] # losses config
   - /modalities@model.params.modalities_config: diffmap
+  - override /diffusion_model/model@model.params.wrapper_cfg: unet # model config
 
-# Overrides image size in data, model and modalities children configs.
-scenes: null
-val_scenes: null
-image_size: 64
-n_future: 1
-n_ctxt: 1
-channels_m: 3
-stride: 1
-flip_trajectories: False
-normalize_flow: True
+modalities:
+  channels_m: 3
 
 data:
+  n_ctxt: 3
+  n_future: 1
+  image_size: 64
+  scenes: null
+  val_scenes: null
+  stride: 3
+  flip_trajectories: False
+  normalize_flow: True
+
   params:
     batch_size: 16
     num_workers: 8
@@ -28,15 +29,9 @@ data:
 
 model:
   params:
-    log_every_t: 200 #when logging generated samples, frequency of logging for intermediate samples  
-    timesteps: 1000 #sampling timesteps in forward/backward
-    n_future: ${n_future}
-    n_ctxt: ${n_ctxt}
     conditioning_key: concat #defines the type of conditioning ie (crossattn, concat, hybrid)
-    parameterization: eps
-    unet_trainable: all  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn, false)
+    unet_trainable: False  #defines trainable modules (all=True, attn, conv_in, conv_io, conv_out, conv_io_attn, false)
     compute_weights: True
-    ckpt_path: null
     scheduler_config: null
 
 lightning:
@@ -52,7 +47,6 @@ lightning:
         log_all_val: True # permet de logger la validation, sinon ne log pas
         log_first_step: True
 
-        # TODO - modify to control sampling
         log_images_kwargs:
           use_ema_scope: False
           inpaint: False
@@ -73,7 +67,8 @@ lightning:
     # val_check_interval: 5 #frequency of validation in iterations
 
 experiment_cfg:
-  resume: null # to overwrite
-  visualization: false
-  save_points: true
-  autoregressive: false
+  resume: checkpoints/pretrained_co3d_3cond # to overwrite
+  visualization: True
+  save_points: False
+  autoregressive: True
+  n_samples_max: 50
