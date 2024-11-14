@@ -1,15 +1,15 @@
-# Stable - Diffmap
+# Diffmap
 
 Diffusion model for joint Next frame + Optical Flow denoising along with depth prediction.
 
-The codebase mainly builds on two codebases that implement [Stable Diffusion](https://github.com/justinpinkney/stable-diffusion) and [Flowmap](https://github.com/dcharatan/flowmap).
+The codebase mainly builds on two great repos that implement [Stable Diffusion](https://github.com/justinpinkney/stable-diffusion) and [Flowmap](https://github.com/dcharatan/flowmap).
 
 
 ## Install
 To install and create a Python virtual environment on Linux:
 ```bash
-git clone https://github.com/JulienGaubil/stable-diffmap.git
-cd stable-diffmap
+git clone https://github.com/JulienGaubil/diffmap.git
+cd diffmap
 conda create --name diffmap python=3.10
 conda activate diffmap
 pip install -r requirements.txt
@@ -27,33 +27,12 @@ python main.py +experiment=[diffmap]
 
 For running specific experiment, add their experiment config located under `configs/experiment/`.
 
-E.g. for pretraining on all Rooms scenes with a shallow model:
+E.g. for pretraining on CO3Dv2 hydrant scenes:
 ```bash
-python main.py +experiment=[diffmap,shallow,ddpm/pretrain_rooms]
-```
-
-
-Detailed script with useful training settings for training on 395 Rooms scenes with 5 validation scenes:
-```bash
-scenes=null
-val_scenes=['000396','000397','000398','000399','000400']
-stride=1
-flip_trajectories=False
-n_future=1
-
-gpus=[0]
-
-python main.py scenes=$scenes val_scenes=$val_scenes stride=$stride flip_trajectories=$flip_trajectories n_future=$n_future \
-experiment_cfg.logdir=$logdir experiment_cfg.name=$name lightning.trainer.gpus=$gpus \
-+experiment=[diffmap,shallow,ddpm/pretrain_rooms]
+python main.py +experiment=[diffmap,medium,ddpm/pretrain_co3d]
 ```
 
 ### Datasets
-Downloading and formatting the datasets:
-- Find the preprocessed *Rooms* dataset at `/data/scene-rep/scratch/jgaubil/datasets/rooms` on Schadenfreude and the cluster.
-- Find the raw *CO3Dv2* dataset at `/data/scene-rep/CO3Dv2` on Schadenfreude and the cluster.
-- Find the raw *LLFF* dataset at `/nobackup/nvme1/datasets/llff` on Schadenfreude.
-
 
 To preprocess your own dataset, place your ordered frames under a `datasets` folder with follow the structure:
 
@@ -73,10 +52,20 @@ then run:
 ```bash
 # TODO add preprocessing scripts and couple it with Hydra from CLI
 # Modify accordingly
-GPU_ID=0
 image_shape=[512,512]
 scenes=null #select all scenes
 root=datasets/llff
 
-CUDA_VISIBLE_DEVICES=$GPU_ID python -m ldm.preprocessing.preprocess_llff data.root=$root data.scenes=$scenes data.image_shape=$image_shape
+python -m ldm.preprocessing.preprocess_llff data.root=$root data.scenes=$scenes data.image_shape=$image_shape
 ```
+
+
+### Using pretrained models
+To use a model pretrained on the hydrant subset of CO3Dv2, please download the [model checkpoint](https://drive.google.com/file/d/1kozE-14kpgRlcglU_6wUjpn8L7bosdhu/view?usp=share_link), unzip it and place the folder under `checkpoints` folder. Also download a subset of validation scenes from CO3DV2-hydrants [here](https://drive.google.com/file/d/1tzFHPUOyxhvoE9ZPX1WpeHOzQQsBUW9h/view?usp=share_link), unzip it and place it under the `datasets` folder. 
+
+
+To sample the model pretrained model based on a frame of a CO3Dv2 scene, then run:
+```bash
+python sample.py data.val_scenes=[\"421_58453_112679\"] experiment_cfg.resume=checkpoints/pretrained_co3d_3cond +experiment=[sampling,medium]
+```
+the video visualization for every modality will be stored under the `sampling_outputs` folder.
