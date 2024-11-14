@@ -2,7 +2,7 @@
 
 # Defines default config.
 defaults:
-  - /data: rooms
+  - /data: co3d
   - /diffusion_model@model: ddpm
   - /diffusion_model/scheduler@model.params.scheduler_config: linear_decrease
   - /loss@model.params.losses_config: [diffusion_loss,flowmap_loss] # flowmap loss config
@@ -10,18 +10,18 @@ defaults:
   - override /diffusion_model/model@model.params.wrapper_cfg: unet
 
 data:
-  scenes: '000001'
-  val_scenes: null
+  scenes: null
+  val_scenes: ['421_58422_112570','421_58428_112592','421_58448_112675','421_58453_112679','421_58481_112925','423_58828_113391','423_58839_113399','423_58880_113838','423_58894_113885','423_58949_114399']
   image_size: 64
   n_future: 1
   n_ctxt: 1
-  stride: 1
+  stride: 3
   flip_trajectories: False
   normalize_flow: True
 
   params:
     batch_size: 16
-    num_workers: 8
+    num_workers: 16
     test: null
 
 modalities:

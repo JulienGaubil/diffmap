@@ -2,7 +2,7 @@ target: ldm.data.datamodule.DataModuleFromConfig
 
 # Default params used.
 image_size: 512
-categories: 'hydrant'
+categories: null
 scenes: '106_12648_23157'
 val_scenes: null
 stride: 1
