@@ -88,12 +88,14 @@ class DDPMDiffmap(DDPM):
 
         # Instantiate losses.
         if isinstance(losses_config, DictConfig):
-            self.losses = [instantiate_from_config(losses_config)]
+            self.losses = nn.ModuleList([instantiate_from_config(losses_config)])
         elif isinstance(losses_config, (ListConfig, list)):
-            self.losses = [instantiate_from_config(geometric_loss_config) for geometric_loss_config in losses_config]
+            self.losses = nn.ModuleList([instantiate_from_config(loss_config) for loss_config in losses_config])
         else:
-            self.losses = list()
+            self.losses = nn.ModuleList()
         assert len(self.losses) > 0, "No loss is being optimized"
+        for loss in self.losses:
+            loss.to(self.device)
 
         # Enable not training - only viz. TODO remove?
         if self.unet_trainable is False:
