@@ -1,12 +1,9 @@
 # Diffmap
 
-Diffusion model for joint Next frame + Optical Flow denoising along with depth prediction.
-
-The codebase mainly builds on two great repos that implement [Stable Diffusion](https://github.com/justinpinkney/stable-diffusion) and [Flowmap](https://github.com/dcharatan/flowmap).
-
+**Diffmap** is a self-supervised diffusion model that supports any subset of next frame generation, optical flow generation, and depth prediction.
 
 ## Install
-To install and create a Python virtual environment on Linux:
+To install the codebase and set up a Python virtual environment on Linux:
 ```bash
 git clone https://github.com/JulienGaubil/diffmap.git
 cd diffmap
@@ -18,24 +15,24 @@ git submodule update --init --recursive
 
 ## Getting started
 
-### Running the code 
-Run the script `main.py` with the `diffmap` experiment config for the default overfitting on a single Rooms scene:
+### Running the code
+Run the main script with the default `diffmap` experiment configuration for training Next frame and Optical flow generation as well Depth prediction on CO3Dv2, hydrant subset, using the default U-Net model:
 ```bash
 python main.py +experiment=[diffmap]
 ```
 
+To run specific experiments, provide the desired experiment configuration located under `configs/experiment/`.
 
-For running specific experiment, add their experiment config located under `configs/experiment/`.
-
-E.g. for pretraining on CO3Dv2 hydrant scenes:
+**Example**: For using a reduced U-Net model:
 ```bash
-python main.py +experiment=[diffmap,medium,ddpm/pretrain_co3d]
+python main.py +experiment=[diffmap,medium]
 ```
+
+---
 
 ### Datasets
 
-To preprocess your own dataset, place your ordered frames under a `datasets` folder with follow the structure:
-
+To preprocess your dataset, organize your videos and frames into the following structure under a `datasets` directory:
 ```
 .
 ├── datasets
@@ -48,24 +45,39 @@ To preprocess your own dataset, place your ordered frames under a `datasets` fol
 │   │   └── <scene-N>
 
 ```
-then run:
+Then preprocess the data using the provided script:
 ```bash
-# TODO add preprocessing scripts and couple it with Hydra from CLI
-# Modify accordingly
-image_shape=[512,512]
-scenes=null #select all scenes
-root=datasets/llff
+image_shape=<im-size>
+root=<path-to-root>
 
-python -m ldm.preprocessing.preprocess_llff data.root=$root data.scenes=$scenes data.image_shape=$image_shape
+python -m ldm.preprocessing.preprocess_llff data.root=$root data.image_shape=$image_shape
 ```
+**Note**: The preprocessing script is currently in development.
 
+---
 
-### Using pretrained models
-To use a model pretrained on the hydrant subset of CO3Dv2, please download the [model checkpoint](https://drive.google.com/file/d/1kozE-14kpgRlcglU_6wUjpn8L7bosdhu/view?usp=share_link), unzip it and place the folder under `checkpoints` folder. Also download a subset of validation scenes from CO3DV2-hydrants [here](https://drive.google.com/file/d/1tzFHPUOyxhvoE9ZPX1WpeHOzQQsBUW9h/view?usp=share_link), unzip it and place it under the `datasets` folder. 
+### Using Pretrained Models
 
+#### Download Pretrained Models and data samples
+To use a pretrained model on the hydrant subset of CO3Dv2:  
+1. Download the pretrained [model checkpoint](https://drive.google.com/file/d/1kozE-14kpgRlcglU_6wUjpn8L7bosdhu/view?usp=share_link), unzip it, and place the folder under the `checkpoints` directory with the `pretrained_co3d_3cond` name.
 
-To sample the model pretrained model based on a frame of a CO3Dv2 scene, then run:
+2. Download a subset of validation scenes from CO3Dv2-hydrants [here](https://drive.google.com/file/d/1tzFHPUOyxhvoE9ZPX1WpeHOzQQsBUW9h/view?usp=share_link), unzip it, and place it under the `datasets` directory with the `CO3Dv2` name.
+
+#### Sample Pretrained Models
+To sample a pretrained model using a frame from a CO3Dv2 scene, run:
+
 ```bash
-python sample.py data.val_scenes=[\"421_58453_112679\"] experiment_cfg.resume=checkpoints/pretrained_co3d_3cond +experiment=[sampling,medium]
+python sample.py data.val_scenes=[\"421_58453_112679\"] \
+experiment_cfg.resume=checkpoints/pretrained_co3d_3cond \
++experiment=[sampling,medium]
 ```
-the video visualization for every modality will be stored under the `sampling_outputs` folder.
+The video visualizations for all generated modalities will be saved in the `sampling_outputs` folder.
+
+
+
+## Acknowledgments
+
+This codebase builds upon two excellent repositories:  
+- [Stable Diffusion](https://github.com/justinpinkney/stable-diffusion)  
+- [Flowmap](https://github.com/dcharatan/flowmap)
