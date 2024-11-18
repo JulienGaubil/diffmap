@@ -8,6 +8,7 @@ from einops import rearrange, repeat
 from omegaconf import OmegaConf, DictConfig
 
 from ldm.misc.modalities import Modalities
+from ldm.models.diffusion.ddpm_diffmap import DDPMDiffmap
 
 
 class DiffusionLoss(nn.Module):
@@ -44,9 +45,10 @@ class DiffusionLoss(nn.Module):
         batch: Dict,
         modalities_in: Modalities,
         modalities_out: Modalities,
-        t,
-        diffusion_module
-    ) -> Dict:
+        t: Int[Tensor, f"sample"],
+        noise: Float[Tensor, "batch frame channel height width"],
+        diffusion_module: DDPMDiffmap,
+    ) -> Tuple[Dict, Dict, Modalities, Int[Tensor, f"sample"], nn.Module]:
         assert modalities_in.n_noisy_channels > 0 and modalities_out.n_noisy_channels > 0, "Denoising loss used without noisy I/O."
         assert modalities_in.denoised_modalities == modalities_out.denoised_modalities
 
@@ -54,13 +56,13 @@ class DiffusionLoss(nn.Module):
         if diffusion_module.parameterization == "x0":
             denoising_target = batch['x_start']
         elif diffusion_module.parameterization == "eps":
-            denoising_target = batch['noise']
+            denoising_target = noise
         else:
             raise NotImplementedError()
         
         denoised_output_dict = {id:rearrange(output_dict[id], 'b f c h w -> (b f) c h w') for id in modalities_out.ids_denoised}
-        target_output_dict = self.modalities_out.split_modalities(denoising_target, modality_ids=self.modalities_out.ids_denoised)
-        target_output_dict = {k:rearrange(v, 'b (f c) h w -> (b f) c h w', c=self.channels_m) for k,v in target_output_dict.items()}
+        target_output_dict = modalities_out.split_modalities(denoising_target, modality_ids=modalities_out.ids_denoised)
+        target_output_dict = {k:rearrange(v, 'b (f c) h w -> (b f) c h w', c=diffusion_module.channels_m) for k,v in target_output_dict.items()}
 
         return denoised_output_dict, target_output_dict, modalities_out, t, diffusion_module
 
@@ -70,7 +72,7 @@ class DiffusionLoss(nn.Module):
         target_output_dict: Dict,
         modalities_out: Modalities,
         t: Int[Tensor, f"sample"],
-        diffusion_module
+        diffusion_module: DDPMDiffmap,
     ) -> Tuple[float, Dict]:
         device = diffusion_module.device
 
@@ -90,7 +92,7 @@ class DiffusionLoss(nn.Module):
             # Simple diffusion loss.
             loss_simple_m = self.get_loss(denoised_output_dict[id_m], target_output_dict[id_m], mean=False).mean([1, 2, 3]) # TODO - change get_loss
             loss_simple += loss_simple_m
-            loss_simple.update({f'{prefix}_{id_m}/loss_simple': loss_simple_m.clone().detach().mean()})
+            metrics_dict.update({f'{prefix}_{id_m}/loss_simple': loss_simple_m.clone().detach().mean()})
             loss_gamma_m = loss_simple_m / torch.exp(logvar_t) + logvar_t
             if diffusion_module.learn_logvar:
                 metrics_dict.update({f'{prefix}_{id_m}/loss_gamma': loss_gamma_m.mean()})
@@ -125,12 +127,19 @@ class DiffusionLoss(nn.Module):
         batch: Dict,
         prefix: str,
         t: Int[Tensor, f"sample"],
-        diffusion_module,
+        noise: Float[Tensor, "batch frame channel height width"],
+        diffusion_module: DDPMDiffmap,
         **kwargs
     ) -> Tuple[float, Dict]:
-        denoised_output_dict, target_output_dict, modalities_out, t, diffusion_module = self.prepare_loss_inputs(output_dict, batch, modalities_in, modalities_out, t, diffusion_module)
+        denoised_output_dict, target_output_dict, modalities_out, t, diffusion_module = self.prepare_loss_inputs(output_dict, batch, modalities_in, modalities_out, t, noise, diffusion_module)
         
-        loss, metrics_dict = self.criterion(denoised_output_dict, target_output_dict, modalities_out, t, diffusion_module, prefix)
+        loss, metrics_dict = self.criterion(
+            denoised_output_dict,
+            target_output_dict,
+            modalities_out,
+            t,
+            diffusion_module
+        )
         metrics_dict.update({f'{prefix}/diffusion_loss': loss})
         
         return loss, metrics_dict

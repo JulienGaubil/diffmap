@@ -1,7 +1,4 @@
-# Default params used.
-image_size: 64
-
-target: ldm.loss.flowmap_loss.FlowmapLoss
+arget: ldm.loss.flowmap_loss.FlowmapLoss
 
 params:
   loss_cfg:
@@ -29,11 +26,11 @@ params:
           delta: 0.01
 
     model_wrapper:
-      patch_size: 32 #a modifier?
+      patch_size: 32
 
     cropping:
       image_shape:
         - ${data.image_size}
         - ${data.image_size}
       flow_scale_multiplier: 4
-      patch_size: 32 #a modifier?
+      patch_size: 32

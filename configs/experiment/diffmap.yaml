@@ -5,7 +5,7 @@ defaults:
   - /data: co3d
   - /diffusion_model@model: ddpm
   - /diffusion_model/scheduler@model.params.scheduler_config: linear_decrease
-  - /loss@model.params.losses_config: [diffusion_loss,flowmap_loss] # flowmap loss config
+  - /loss@model.params.losses_config: diffmap_loss
   - /modalities@model.params.modalities_config: diffmap
   - override /diffusion_model/model@model.params.wrapper_cfg: unet
 
@@ -65,4 +65,4 @@ lightning:
 
 experiment_cfg:
   logdir: logs/
-  name: rooms_overfit_diffmap
+  name: diffmap_co3d
