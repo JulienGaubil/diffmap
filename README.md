@@ -62,7 +62,7 @@ python -m ldm.preprocessing.preprocess_llff data.root=$root data.image_shape=$im
 To use a pretrained model on the hydrant subset of CO3Dv2:  
 1. Download the pretrained [model checkpoint](https://drive.google.com/file/d/1kozE-14kpgRlcglU_6wUjpn8L7bosdhu/view?usp=share_link), unzip it, and place the folder under the `checkpoints` directory with the `pretrained_co3d_3cond` name.
 
-2. Download a subset of validation scenes from CO3Dv2-hydrants [here](https://drive.google.com/file/d/1tzFHPUOyxhvoE9ZPX1WpeHOzQQsBUW9h/view?usp=share_link), unzip it, and place it under the `datasets` directory with the `CO3Dv2` name.
+2. Download a subset of train and validation scenes from CO3Dv2-hydrants [here](https://drive.google.com/file/d/1873fQhFIfMSYMVfwF0651hHNT3bDhOFQ/view?usp=share_link), unzip it, and place it under the `datasets` directory with the `CO3Dv2` name.
 
 #### Sample Pretrained Models
 To sample a pretrained model using a frame from a CO3Dv2 scene, run:
