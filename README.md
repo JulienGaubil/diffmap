@@ -15,6 +15,11 @@ git submodule update --init --recursive
 
 ## Getting started
 
+### Downloading data
+Download a subset of train and validation scenes from CO3Dv2-hydrant [here](https://drive.google.com/file/d/1873fQhFIfMSYMVfwF0651hHNT3bDhOFQ/view?usp=share_link), unzip, and place them under `datasets/CO3Dv2/hydrant`.
+
+---
+
 ### Running the code
 Run the main script with the default `diffmap` experiment configuration for training Next frame and Optical flow generation as well Depth prediction on CO3Dv2, hydrant subset, using the default U-Net model:
 ```bash
@@ -30,7 +35,7 @@ python main.py +experiment=[diffmap,medium]
 
 ---
 
-### Datasets
+### Preprocessing your dataset
 
 To preprocess your dataset, organize your videos and frames into the following structure under a `datasets` directory:
 ```
@@ -56,15 +61,12 @@ python -m ldm.preprocessing.preprocess_llff data.root=$root data.image_shape=$im
 
 ---
 
-### Using Pretrained Models
+### Using pretrained models
 
-#### Download Pretrained Models and data samples
-To use a pretrained model on the hydrant subset of CO3Dv2:  
-1. Download the pretrained [model checkpoint](https://drive.google.com/file/d/1kozE-14kpgRlcglU_6wUjpn8L7bosdhu/view?usp=share_link), unzip it, and place the folder under the `checkpoints` directory with the `pretrained_co3d_3cond` name.
+#### Download checkpoints
+To use a pretrained model on the hydrant subset of CO3Dv2: download the pretrained [model checkpoint](https://drive.google.com/file/d/1kozE-14kpgRlcglU_6wUjpn8L7bosdhu/view?usp=share_link), unzip it, and place the folder under the `checkpoints` directory with the `pretrained_co3d_3cond` name.
 
-2. Download a subset of train and validation scenes from CO3Dv2-hydrants [here](https://drive.google.com/file/d/1873fQhFIfMSYMVfwF0651hHNT3bDhOFQ/view?usp=share_link), unzip it, and place it under the `datasets` directory with the `CO3Dv2` name.
-
-#### Sample Pretrained Models
+#### Sample pretrained models
 To sample a pretrained model using a frame from a CO3Dv2 scene, run:
 
 ```bash
